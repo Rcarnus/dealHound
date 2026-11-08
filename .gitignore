@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+logs/
+# real searches are private: only examples/mission/ is versioned
+missions/
+context/*.md
+!context/README.md
+.remote/
+.collect.lock
+deploy/config.local.env
+
+# personal data: original car-search hand-off (ingested into context/ and a private mission)
+contexte_recherche_voiture.md

@@ -1,0 +1,50 @@
+# Exemple de mission dealHound (versionné). Les vraies missions vivent dans
+# missions/<nom>/ et sont ignorées par git.
+#
+#   mkdir -p missions/<nom> && cp examples/mission/* missions/<nom>/
+#   python collect.py --mission <nom> --dry-run -v
+name: exemple-guitare
+description: >
+  Je cherche une Fender Stratocaster (Mexique ou USA), bon état, idéalement
+  avec étui. Éviter les copies et les modèles Squier.
+
+# Filtres durs communs à toutes les sources (appliqués par les scripts).
+filters:
+  query: "fender stratocaster"
+  # price_min: 200
+  price_max: 800
+  location:                 # centre + rayon ; reprendre le domicile de context/profil.md
+    city: Toulouse
+    lat: 43.6045
+    lng: 1.4440
+    radius_km: 100
+
+# Sources activées, avec leurs filtres propres (écrasent les filtres communs).
+# Clés possibles : docstring de build_search_kwargs (dealhound/sources/leboncoin.py).
+sources:
+  leboncoin:
+    category: "30"          # "0" toutes, "2" voitures, "30" instruments de musique
+    max_pages: 2            # 35 annonces par page
+    # sort: newest          # newest | cheapest | relevance
+    # owner_type: private   # pro | private | all
+    # title_only: true      # chercher les mots-clés dans le titre seulement
+    #
+    # Filtres serveur avancés : les clés sont les clés d'attributs des annonces.
+    # Exemple voiture (category "2") :
+    # enums:
+    #   u_car_brand: [TOYOTA]
+    #   u_car_model: [TOYOTA_Corolla]
+    #   fuel: ["6"]           # 6 hybride, 8 hybride rechargeable, 2 diesel
+    #   vehicle_type: [break]
+    # ranges:
+    #   regdate: {min: 2020}
+    #   mileage: {max: 160000}
+
+# Critères souples, évalués par Claude lors de l'analyse.
+analysis:
+  must_have: ["Fender authentique (pas Squier)"]
+  nice_to_have: ["étui", "micros d'origine"]
+  red_flags: ["prix anormalement bas", "paiement hors plateforme"]
+
+notify:
+  min_score: 8
