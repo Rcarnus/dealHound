@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any
 
+from dealhound import store
 from dealhound.geo import distance_km
 from dealhound.models import Mission
 
@@ -58,7 +59,7 @@ def _place(rec: dict[str, Any], home: tuple[float, float] | None) -> str:
 
 def render(mission: Mission, state: dict[str, Any]) -> str:
     recs = list(state["listings"].values())
-    active = [r for r in recs if r["status"] != "gone"]
+    active = [r for r in recs if store.is_active(r)]
     analyzed = [r for r in active if r["status"] == "analyzed" and r.get("analysis")]
     pending = [r for r in active if r["status"] == "new"]
 
@@ -126,6 +127,15 @@ def render(mission: Mission, state: dict[str, Any]) -> str:
                 "| Prix | Annonce | Disparue le | Lien |", "|---:|---|---|---|"]
         for r in gone:
             out.append(f"| {_price(r)} | {_title(r)} | {_date(r.get('gone_at'))} | {_link(r)} |")
+        out.append("")
+
+    black = [r for r in recs if r.get("blacklisted") and r["status"] != "gone"]
+    if black:
+        out += [f"## Liste noire ({len(black)})", "",
+                "| Prix | Annonce | Raison | Lien |", "|---:|---|---|---|"]
+        for r in black:
+            out.append(f"| {_price(r)} | {_title(r)} | {_cell(r['blacklisted'].get('reason'))} "
+                       f"| {_link(r)} |")
         out.append("")
 
     return "\n".join(out)

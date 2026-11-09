@@ -1,10 +1,11 @@
-"""Read-only helpers behind the /dealhound skill and deploy.sh.
+"""Helpers behind the /dealhound skill and deploy.sh (read-only, except blacklist).
 
 Run on the machine that holds the missions (locally, or on the server via deploy.sh):
 
     python -m dealhound.cli list [--json]                 missions, criteria, counts
     python -m dealhound.cli results <mission> [-n 10] [--json]   best deals of a mission
     python -m dealhound.cli doctor [--json]               local configuration check
+    python -m dealhound.cli blacklist <mission> list|add|remove [ref] [--reason R]
 
 Exit codes: 0 ok, 1 failure (doctor: at least one FAIL), 2 bad usage / unknown mission.
 """
@@ -65,7 +66,7 @@ def mission_dirs() -> list[Path]:
 def summarize(mission_dir: Path) -> dict[str, Any]:
     try:
         m = Mission.load(mission_dir)
-        state = store.load_state(m.state_path, m.name)
+        state = store.load_mission_state(m)
     except (MissionError, ValueError, OSError) as e:
         return {"id": mission_dir.name, "error": str(e)}
     recs = list(state["listings"].values())
@@ -121,7 +122,7 @@ def top_deals(state: dict[str, Any], n: int,
 
     A listing back in "new" after a price drop keeps its previous analysis, flagged
     as stale until re-scored."""
-    active = [r for r in state["listings"].values() if r["status"] != "gone"]
+    active = [r for r in state["listings"].values() if store.is_active(r)]
     active.sort(key=_sort_key, reverse=True)
     rows = []
     for rank, r in enumerate(active[:n], 1):
@@ -134,6 +135,7 @@ def top_deals(state: dict[str, Any], n: int,
             "scores": a.get("scores") or {},
             "eliminatory": a.get("eliminatory", False),
             "analysis_stale": bool(a) and r["status"] == "new",
+            "label": a.get("label"),
             "summary": a.get("summary"),
             "red_flags": a.get("red_flags") or [],
             "questions": a.get("questions") or [],
@@ -157,7 +159,7 @@ def cmd_results(args: argparse.Namespace) -> int:
         print(f"mission inconnue : {args.mission}", file=sys.stderr)
         return 2
     m = Mission.load(d)
-    state = store.load_state(m.state_path, m.name)
+    state = store.load_mission_state(m)
     recs = state["listings"].values()
     out = {
         "id": args.mission,
@@ -166,7 +168,8 @@ def cmd_results(args: argparse.Namespace) -> int:
         "scoring_criteria": [c.to_dict() for c in m.scoring],
         "synthesis": state.get("synthesis"),
         "collected_at": state.get("collected_at"),
-        "active": sum(1 for r in recs if r["status"] != "gone"),
+        "active": sum(1 for r in recs if store.is_active(r)),
+        "blacklisted": sum(1 for r in recs if r.get("blacklisted")),
         "analyzed": sum(1 for r in recs if r["status"] == "analyzed"),
         "pending": sum(1 for r in recs if r["status"] == "new"),
         "deals": top_deals(state, args.n, m.home),
@@ -302,6 +305,48 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     return 1 if any(c["status"] == "FAIL" for c in checks) else 0
 
 
+# ---------------------------------------------------------------- blacklist
+
+def cmd_blacklist(args: argparse.Namespace) -> int:
+    from dealhound import blacklist
+
+    d = MISSIONS_DIR / args.mission
+    if not (d / "mission.yaml").exists():
+        print(f"mission inconnue : {args.mission}", file=sys.stderr)
+        return 2
+    try:
+        if args.action == "list":
+            entries = list(blacklist.load(d).values())
+            if args.json:
+                print(json.dumps(entries, ensure_ascii=False))
+            else:
+                for e in entries or [{"id": "(liste noire vide)"}]:
+                    print(f"{e['id']}  {e.get('at', '')}  {e.get('reason', '')}  {e.get('title', '')}")
+            return 0
+        if not args.ref:
+            print("référence d'annonce requise (lien, numéro ou source:id)", file=sys.stderr)
+            return 2
+        if args.action == "add":
+            m = Mission.load(d)
+            state = store.load_state(m.state_path, m.name)
+            entry = blacklist.add(d, args.ref, args.reason, state)
+            if args.title and "title" not in entry or args.url and "url" not in entry:
+                entries = blacklist.load(d)
+                entries[entry["id"]].update({k: v for k, v in (("title", args.title),
+                                             ("url", args.url)) if v})
+                blacklist.save(d, entries)
+                entry = entries[entry["id"]]
+            print(json.dumps(entry, ensure_ascii=False) if args.json
+                  else f"ajoutée : {entry['id']} ({entry['reason']})")
+            return 0
+        removed = blacklist.remove(d, args.ref)
+        print("retirée" if removed else "absente de la liste noire")
+        return 0 if removed else 1
+    except blacklist.BlacklistError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 2
+
+
 # ---------------------------------------------------------------- main
 
 def main(argv: list[str] | None = None) -> int:
@@ -322,6 +367,16 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("doctor", help="local configuration check")
     s.add_argument("--json", action="store_true")
     s.set_defaults(func=cmd_doctor)
+
+    s = sub.add_parser("blacklist", help="listings rejected by the user (local mission file)")
+    s.add_argument("mission")
+    s.add_argument("action", choices=("list", "add", "remove"))
+    s.add_argument("ref", nargs="?", help="listing URL, number or source:id (add/remove)")
+    s.add_argument("--reason", default="", help="why it is rejected (add)")
+    s.add_argument("--title", default="", help="listing title, if not in the local state (add)")
+    s.add_argument("--url", default="", help="listing URL, if not in the local state (add)")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(func=cmd_blacklist)
 
     args = p.parse_args(argv)
     return args.func(args)

@@ -36,7 +36,8 @@ log = logging.getLogger("analyze")
 
 def pending(state: dict) -> list[dict]:
     """Listings to (re)score: new ones and price drops, newest first."""
-    recs = [r for r in state["listings"].values() if r["status"] == "new"]
+    recs = [r for r in state["listings"].values()
+            if r["status"] == "new" and not r.get("blacklisted")]
     recs.sort(key=lambda r: r.get("published") or r.get("first_seen") or "", reverse=True)
     return recs
 
@@ -45,7 +46,7 @@ def analyze_mission(mission: Mission, args: argparse.Namespace, model: str) -> b
     if not mission.scoring:
         log.warning("[%s] no scoring criteria in mission.yaml, skipped", mission.name)
         return True
-    state = store.load_state(mission.state_path, mission.name)
+    state = store.load_mission_state(mission)
     todo = pending(state)
     if args.limit:
         todo = todo[: args.limit]

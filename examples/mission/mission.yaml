@@ -55,6 +55,7 @@ scoring:
       description: "10 = nettement sous le marché pour l'état ; 5 = prix du marché ; 0 = au-dessus du budget"
     - id: modele
       label: Modèle / version
+      short: Modèle   # abréviation pour Telegram (facultatif)
       weight: 2
       description: "10 = USA ou Mexique, série recherchée ; 5 = version correcte ; 0 = Squier ou copie"
     - id: etat
@@ -67,6 +68,7 @@ scoring:
       description: "10 = < 20 km du domicile ; 5 = ~60 km ; 0 = > 150 km sans envoi possible"
     - id: confiance
       label: Confiance vendeur
+      short: Vendeur
       weight: 1
       description: "10 = annonce complète, photos réelles, remise en main propre ; 0 = signaux d'arnaque"
 

@@ -33,6 +33,7 @@ Afficher ce tableau, puis s'arrêter (sans rien lancer, mais signaler en une lig
 | `/dealhound results <id>` | Les 10 meilleurs deals d'une recherche, notés critère par critère |
 | `/dealhound new [description]` | Crée une recherche (critères de recherche + de notation), la fait valider, puis la déploie |
 | `/dealhound stop <id>` | Arrête une recherche sur son serveur (archivée, rien n'est supprimé) |
+| `/dealhound blacklist <id> [annonce] [raison]` | Écarte une annonce (vendue, indisponible, non voulue…) ; sans annonce : affiche la liste noire |
 | `/dealhound config` | État des lieux de la configuration (local et serveurs) |
 | `/dealhound wizard` | Configuration guidée, préparation du serveur comprise, puis vérification complète |
 
@@ -116,11 +117,15 @@ vraie mission dans un fichier versionné ou un message de commit.
      | # | Score | <Critère 1> | <Critère 2> | … | Prix | Annonce | Lieu | Avis |
      |---|---|---|---|---|---|---|---|---|
 
+     Annonce : `label` (étiquette courte de l'analyse) en lien vers `url`, sinon le
+     titre. Les annonces de la liste noire sont déjà exclues (`blacklisted` = combien) ;
+     rappeler en une ligne qu'on peut en écarter avec `/dealhound blacklist <id> <rang>`.
+
      - Score : note globale /10 (moyenne pondérée), en gras ; « écartée » si
        `eliminatory`.
      - Colonnes critères : la note /10 de `scores[<id>]`.
      - Prix : `previous_price` barré s'il y a eu une baisse.
-     - Annonce : `[titre](url)`.
+     - Annonce : `[label ou titre](url)`.
      - Lieu : ville + `distance_km` (« à vol d'oiseau »).
      - Avis : `summary`, puis `red_flags` préfixés de ⚠.
    - Sous le tableau : les `questions` à poser pour les 3 premières annonces.
@@ -185,6 +190,29 @@ vraie mission dans un fichier versionné ou un message de commit.
 3. `deploy.sh --host <serveur> retire <id>`, puis `deploy.sh list` pour vérifier.
 4. Le dossier local `missions/<id>/` n'est pas touché ; le dire (on pourra la
    redéployer avec `deploy.sh push <id>`).
+
+## blacklist <id> [annonce] [raison]
+
+Liste noire d'une recherche : annonces que l'utilisateur écarte (vendue, indisponible,
+ne lui plaît pas pour telle raison…). Fichier `missions/<id>/blacklist.yaml` (privé),
+envoyé au serveur par `deploy.sh push <id>`. Une annonce blacklistée reste dans
+l'historique mais n'est plus classée, analysée, affichée dans `results` ni notifiée ; sa
+raison est transmise à l'analyse (les annonces similaires sont pénalisées).
+
+- **Sans annonce** : `py.sh -m dealhound.cli blacklist <id> list --json`, puis tableau
+  Annonce | Raison | Date (avec lien).
+- **Ajouter** : l'annonce peut être donnée par lien leboncoin, numéro d'annonce,
+  `source:id`, ou **rang** dans les derniers résultats (« la 3 », « n°3 ») : dans ce cas,
+  récupérer `deploy.sh --host <serveur> results <id> 10` et prendre `id`, `title`, `url`
+  du rang demandé. Raison absente : la demander (AskUserQuestion : « Déjà vendue » /
+  « Indisponible / plus en ligne » / « Ne me convient pas » + champ libre pour préciser ;
+  pour « Ne me convient pas », demander pourquoi : c'est ce qui aide l'analyse).
+  Plusieurs annonces d'un coup : les ajouter une par une.
+  `py.sh -m dealhound.cli blacklist <id> add <ref> --reason "<raison>" [--title "…"] [--url "…"]`
+- **Retirer** : `py.sh -m dealhound.cli blacklist <id> remove <ref>`.
+- Puis appliquer sur le serveur : `deploy.sh --host <serveur> push <id>` (ne touche pas
+  l'état distant). Confirmer en une ligne : annonce écartée, raison, et effet immédiat
+  sur `results` et les prochaines notifications.
 
 ## config
 

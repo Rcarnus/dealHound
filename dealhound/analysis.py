@@ -57,9 +57,11 @@ def output_schema(criteria: list[Criterion], ids: list[str]) -> dict[str, Any]:
                 "items": {
                     "type": "object",
                     "additionalProperties": False,
-                    "required": ["id", "scores", "eliminatory", "summary", "red_flags", "questions"],
+                    "required": ["id", "label", "scores", "eliminatory", "summary", "red_flags",
+                                 "questions"],
                     "properties": {
                         "id": {"type": "string", "enum": ids},
+                        "label": {"type": "string", "maxLength": 40},
                         "scores": {
                             "type": "object",
                             "additionalProperties": False,
@@ -103,7 +105,8 @@ def listing_payload(rec: dict[str, Any], home: tuple[float, float] | None) -> di
 
 def best_so_far(state: dict[str, Any], n: int = 5) -> list[dict[str, Any]]:
     analyzed = [r for r in state["listings"].values()
-                if r["status"] == "analyzed" and (r.get("analysis") or {}).get("score") is not None]
+                if r["status"] == "analyzed" and not r.get("blacklisted")
+                and (r.get("analysis") or {}).get("score") is not None]
     analyzed.sort(key=lambda r: r["analysis"]["score"], reverse=True)
     return [{"id": r["id"], "title": r.get("title"), "price": r.get("price"),
              "score": r["analysis"]["score"], "summary": r["analysis"].get("summary")}
@@ -117,6 +120,15 @@ def criteria_table(criteria: list[Criterion]) -> str:
     return "\n".join(rows)
 
 
+def rejected(state: dict[str, Any], n: int = 30) -> list[dict[str, Any]]:
+    """Blacklisted listings with the user's reason, most recent first."""
+    recs = [r for r in state["listings"].values() if r.get("blacklisted")]
+    recs.sort(key=lambda r: r["blacklisted"].get("at") or "", reverse=True)
+    return [{"title": r.get("title"), "price": r.get("price"), "location": r.get("location"),
+             "version": (r.get("attributes") or {}).get("u_car_version"),
+             "reason": r["blacklisted"].get("reason")} for r in recs[:n]]
+
+
 def build_prompt(mission: Mission, state: dict[str, Any], batch: list[dict[str, Any]]) -> str:
     home = mission.home
     parts = [
@@ -126,6 +138,11 @@ def build_prompt(mission: Mission, state: dict[str, Any], batch: list[dict[str, 
         "# Critères de notation\n\n" + criteria_table(mission.scoring),
         "# Meilleures annonces déjà notées\n\n```json\n"
         + json.dumps(best_so_far(state), ensure_ascii=False, indent=1) + "\n```",
+        "# Annonces écartées par l'utilisateur (liste noire)\n\n"
+        "Leurs raisons disent ce qu'il ne veut pas : une annonce similaire pour la même "
+        "raison doit être pénalisée ; la même annonce republiée (mêmes caractéristiques, "
+        "même vendeur) est éliminatoire.\n\n```json\n"
+        + json.dumps(rejected(state), ensure_ascii=False, indent=1) + "\n```",
         f"# Annonces à noter ({len(batch)})\n\n```json\n"
         + json.dumps([listing_payload(r, home) for r in batch], ensure_ascii=False, indent=1)
         + "\n```",
@@ -191,6 +208,7 @@ def apply_results(state: dict[str, Any], mission: Mission, batch: list[dict[str,
             "score": overall_score(scores, mission.scoring, eliminatory),
             "scores": scores,
             "eliminatory": eliminatory,
+            "label": (a.get("label") or "").strip()[:40],
             "summary": a.get("summary", ""),
             "red_flags": a.get("red_flags") or [],
             "questions": a.get("questions") or [],

@@ -5,13 +5,14 @@
 #
 #   deploy.sh [--host H] check              SSH access and remote prerequisites (read-only)
 #   deploy.sh [--host H] push [mission...]  sync code + context/, install venv and timers,
-#                                           and sync the given missions (mission.yaml, scoring.md, context.md)
+#                                           and sync the given missions (mission.yaml, scoring.md, context.md, blacklist.yaml)
 #   deploy.sh list                          missions on every configured host (JSON lines)
 #   deploy.sh [--host H] results <mission> [n]   best n deals of a remote mission (JSON)
 #   deploy.sh [--host H] status             timers, last runs, missions present on the server
 #   deploy.sh [--host H] run [collect|analyze]   run a collection (default) or an analysis now
 #   deploy.sh [--host H] test-claude        tiny claude -p call on the server (auth check, ~0.03 $)
 #   deploy.sh [--host H] notify-test        send a Telegram test message from the server
+#   deploy.sh [--host H] notify-preview <mission>  send the current top N (compact) to Telegram
 #   deploy.sh [--host H] logs [n]           last n journal lines (default 50)
 #   deploy.sh [--host H] pull <mission>     fetch remote deals.md + state.json into .remote/<mission>/
 #   deploy.sh [--host H] retire <mission>   stop a mission: move it to missions/.archive/ on the server
@@ -174,15 +175,25 @@ push_secrets() {
   echo "secrets pushed (mode 600)"
 }
 
-cmd_notify_test() {
+# run_notify <args...> : python -m dealhound.notify <args> on the server, with its secrets
+# and the local notification settings.
+run_notify() {
   [ -n "$NOTIFY_TELEGRAM_CHAT_IDS" ] || die "NOTIFY_TELEGRAM_CHAT_IDS is empty in config.env"
-  rscript "$DEPLOY_DIR" "$REMOTE_SECRETS" "$NOTIFY_TELEGRAM_CHAT_IDS" "$NOTIFY_MODE" "$NOTIFY_TOP_N" <<'EOS'
+  rscript "$DEPLOY_DIR" "$REMOTE_SECRETS" "$NOTIFY_TELEGRAM_CHAT_IDS" "$NOTIFY_MODE" "$NOTIFY_TOP_N" "$@" <<'EOS'
 set -euo pipefail
 cd "$HOME/$1"
 [ -f "$HOME/$2" ] || { echo "FAIL no ~/$2 on the server: run deploy.sh push"; exit 1; }
 set -a; . "$HOME/$2"; set +a
-NOTIFY_TELEGRAM_CHAT_IDS="$3" NOTIFY_MODE="$4" NOTIFY_TOP_N="$5" .venv/bin/python -m dealhound.notify test
+chats="$3"; mode="$4"; top="$5"; shift 5
+NOTIFY_TELEGRAM_CHAT_IDS="$chats" NOTIFY_MODE="$mode" NOTIFY_TOP_N="$top" .venv/bin/python -m dealhound.notify "$@"
 EOS
+}
+
+cmd_notify_test() { run_notify test; }
+
+cmd_notify_preview() {
+  need_mission "${1:-}"; valid_name "$1"
+  run_notify preview "$1" --send
 }
 
 cmd_push() {
@@ -201,7 +212,7 @@ cmd_push() {
 
   for m in "$@"; do
     local files=("missions/$m/mission.yaml")
-    for f in context.md scoring.md; do
+    for f in context.md scoring.md blacklist.yaml; do
       [ -f "missions/$m/$f" ] && files+=("missions/$m/$f")
     done
     rsh mkdir -p "$DEPLOY_DIR/missions/$m"
@@ -333,8 +344,9 @@ case "${1:-}" in
   run)    shift; cmd_run "$@" ;;
   test-claude) cmd_test_claude ;;
   notify-test) cmd_notify_test ;;
+  notify-preview) shift; cmd_notify_preview "$@" ;;
   logs)   shift; cmd_logs "$@" ;;
   pull)   shift; cmd_pull "$@" ;;
   retire) shift; cmd_retire "$@" ;;
-  *) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  *) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

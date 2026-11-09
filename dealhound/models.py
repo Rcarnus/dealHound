@@ -37,6 +37,12 @@ class Criterion:
     label: str         # column header in results
     weight: float      # relative weight in the overall score
     description: str   # rubric: what 0 / 5 / 10 mean
+    short: str = ""    # abbreviation for compact displays (Telegram); derived if empty
+
+    def __post_init__(self) -> None:
+        if not self.short:
+            first = re.split(r"[\s/(]+", self.label.strip())[0] or self.id
+            self.short = first[:6]
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -137,7 +143,8 @@ def _load_criteria(path: Path, scoring: dict[str, Any]) -> list[Criterion]:
         if weight <= 0:
             raise MissionError(f"{path}: scoring criterion {cid}: weight must be > 0")
         criteria.append(Criterion(id=cid, label=str(c.get("label") or cid), weight=weight,
-                                  description=str(c.get("description") or "").strip()))
+                                  description=str(c.get("description") or "").strip(),
+                                  short=str(c.get("short") or "").strip()))
     ids = [c.id for c in criteria]
     if len(ids) != len(set(ids)):
         raise MissionError(f"{path}: duplicate scoring criterion ids")

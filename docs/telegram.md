@@ -45,6 +45,12 @@ Reporter le ou les identifiants voulus dans `config.env`, séparés par des espa
 | `new_deal` | À chaque analyse : toutes les annonces notées | Très bavard |
 | `off` | Jamais | |
 
+Format : **un deal par ligne** : rang, note globale, étiquette courte cliquable (lien
+vers l'annonce, URL masquée), prix, distance, puis la note de chaque critère de
+notation (abréviation `short` des critères dans `mission.yaml`). 🆕 = notée pendant
+cette analyse, ⚠ = red flag, ↓ = prix en baisse. Le détail (avis, questions) est dans
+`/dealhound results`. Les annonces de la liste noire ne sont jamais notifiées.
+
 Une mission peut avoir son propre mode dans `mission.yaml` : `notify: {mode: analysis}`.
 Pas d'annonce nouvelle : pas d'analyse, donc pas de message, quel que soit le mode.
 En mode `top`, une annonce qui remonte dans le classement parce qu'une autre a disparu ne
@@ -56,6 +62,7 @@ déclenche pas de message : seules les annonces notées pendant l'analyse compte
 bash deploy/py.sh -m dealhound.notify test   # envoi depuis le PC
 bash deploy/deploy.sh push                   # envoie secrets.env et la config au serveur
 bash deploy/deploy.sh notify-test            # envoi depuis le serveur
+bash deploy/deploy.sh notify-preview <id>    # envoie le top actuel d'une recherche (rendu)
 ```
 
 Un échec d'envoi n'interrompt jamais l'analyse : il est seulement loggé

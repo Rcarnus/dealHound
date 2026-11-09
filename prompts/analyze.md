@@ -31,6 +31,10 @@ recherche. Tu travailles sans outils, uniquement avec les données fournies.
 
 Uniquement l'objet JSON demandé par le schéma :
 - `analyses` : une entrée par annonce reçue, avec son `id` exact.
+  - `label` : étiquette très courte (40 caractères max) qui distingue l'annonce des
+    autres de la même recherche : variante / version, année, kilométrage ou état. Pas
+    la marque ni le modèle recherchés, déjà connus. Ex. « 2.0 196 Collection 2024 ·
+    44 000 km », « Player Mexique 2019 · étui ».
   - `scores` : une note par critère de notation.
   - `summary` : verdict en une ou deux phrases, en français, factuel (vu / estimé / à
     vérifier).

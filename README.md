@@ -47,6 +47,7 @@ cherche, Claude rédige la mission, la teste, la fait valider puis la déploie.
 | `/dealhound list` | Recherches déployées : mission, serveur, description, critères de recherche et de notation, dernière collecte |
 | `/dealhound results <id>` | Récupère les résultats sur le serveur : tableau des 10 meilleurs deals avec la note de chaque critère, la distance, l'avis, les red flags et la synthèse |
 | `/dealhound stop <id>` | Arrête une recherche (archivée sur le serveur, rien n'est supprimé) |
+| `/dealhound blacklist <id> [annonce] [raison]` | Écarte une annonce (vendue, indisponible, non voulue…), par lien ou par rang dans les résultats : elle n'est plus classée, analysée ni notifiée, et sa raison aide l'analyse à pénaliser les annonces similaires. Sans annonce : affiche la liste noire |
 
 Exemple : `/dealhound new une Fender Stratocaster mexicaine, moins de 700 €, pas trop loin`.
 

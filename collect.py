@@ -44,7 +44,7 @@ def find_missions(names: list[str] | None) -> list[Path]:
 
 def collect_mission(mission: Mission, dry_run: bool, first_query: list[bool]) -> bool:
     """Returns True if every source succeeded."""
-    state = store.load_state(mission.state_path, mission.name)
+    state = store.load_mission_state(mission)
     now = store.now_iso()
     ok = True
     any_change = False

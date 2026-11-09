@@ -5,17 +5,18 @@ config.env / secrets.env through deploy/py.sh):
     TELEGRAM_BOT_TOKEN        bot token (secret: secrets.env only)
     NOTIFY_TELEGRAM_CHAT_IDS  chat ids to notify, space-separated
     NOTIFY_MODE               top (default) | analysis | new_deal | off
-    NOTIFY_TOP_N              size of the ranking watched by "top" (default 10)
+    NOTIFY_TOP_N              size of the ranking shown / watched (default 10)
 A mission can override the mode in mission.yaml: notify: {mode: analysis}.
 
-Modes:
-    analysis   one message per analysis run: synthesis + current top 5 (verbose; handy
-               to tune scoring criteria)
-    new_deal   one message listing every listing scored in this run (verbose)
+Modes (messages are compact: one deal per line, with the score of each criterion):
+    analysis   after every analysis run: the current top N (handy to tune scoring)
+    new_deal   after every analysis run: every listing scored in this run
     top        only when a listing scored in this run enters the top N (default)
 
-    python -m dealhound.notify discover   list chats that wrote to the bot (find chat ids)
-    python -m dealhound.notify test       send a test message to the configured chats
+    python -m dealhound.notify discover            chats that wrote to the bot (chat ids)
+    python -m dealhound.notify test                test message to the configured chats
+    python -m dealhound.notify preview <mission> [--send]
+                                                   current top N as it would be notified
 """
 
 from __future__ import annotations
@@ -25,12 +26,14 @@ import html
 import json
 import logging
 import os
+import re
 import sys
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from typing import Any
 
+from dealhound import store
 from dealhound.geo import distance_km
 from dealhound.models import Mission
 
@@ -41,7 +44,7 @@ MODES = ("top", "analysis", "new_deal", "off")
 _ALIASES = {"": "top", "top10": "top", "each_analysis": "analysis", "new": "new_deal",
             "none": "off", "disabled": "off"}
 MAX_MESSAGE = 3900  # Telegram limit is 4096 characters
-ANALYSIS_TOP = 5
+TITLE_MAX = 40      # one deal per line: keep titles short
 TIMEOUT_S = 20
 
 
@@ -109,10 +112,10 @@ def _call(token: str, method: str, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _chunks(text: str, limit: int = MAX_MESSAGE) -> list[str]:
-    """Split on blank lines (deal boundaries) to stay under the message limit."""
+    """Split on line boundaries (one deal per line) to stay under the message limit."""
     out, cur = [], ""
-    for block in text.split("\n\n"):
-        candidate = f"{cur}\n\n{block}" if cur else block
+    for block in text.split("\n"):
+        candidate = f"{cur}\n{block}" if cur else block
         if len(candidate) <= limit:
             cur = candidate
             continue
@@ -146,7 +149,7 @@ def send(cfg: NotifyConfig, text: str) -> int:
 def ranked(state: dict[str, Any]) -> list[dict[str, Any]]:
     """Active scored listings, best first (same order as /dealhound results)."""
     recs = [r for r in state["listings"].values()
-            if r["status"] != "gone" and (r.get("analysis") or {}).get("score") is not None]
+            if store.is_active(r) and (r.get("analysis") or {}).get("score") is not None]
     recs.sort(key=lambda r: r["analysis"]["score"], reverse=True)
     return recs
 
@@ -158,32 +161,84 @@ def top_ids(state: dict[str, Any], n: int) -> list[str]:
 def _price(rec: dict[str, Any]) -> str:
     p = rec.get("price")
     if p is None:
-        return "prix ?"
-    s = f"{p:,.0f} €".replace(",", " ")
+        return "? €"
+    s = f"{p:,.0f} €".replace(",", " ")
     hist = [h[1] for h in rec.get("price_history", []) if h[1] is not None]
     if len(hist) >= 2 and hist[-1] < hist[-2]:
-        s += f" (↓ {hist[-2]:,.0f} €)".replace(",", " ")
+        s += " ↓"
     return s
 
 
-def format_deal(mission: Mission, rec: dict[str, Any], rank: int | None, new: bool = False) -> str:
-    a = rec.get("analysis") or {}
+def _norm(word: str) -> str:
+    return re.sub(r"[^\w.]", "", word.lower())
+
+
+def _raw_title(rec: dict[str, Any]) -> str:
+    """Fallback text when the analysis gave no short label: the vehicle version when the
+    source has one (more regular than ad titles), else the ad title."""
+    attrs = rec.get("attributes") or {}
+    return attrs.get("u_car_version") or rec.get("title") or "?"
+
+
+def common_words(recs: list[dict[str, Any]], share: float = 0.9) -> set[str]:
+    """Words without digits found in nearly every fallback title of a message (brand,
+    model…): they don't help tell the deals apart, so they are not displayed."""
+    if len(recs) < 3:
+        return set()
+    counts: dict[str, int] = {}
+    for r in recs:
+        for w in {_norm(w) for w in _raw_title(r).split()}:
+            if w and not any(ch.isdigit() for ch in w):
+                counts[w] = counts.get(w, 0) + 1
+    return {w for w, n in counts.items() if n >= share * len(recs)}
+
+
+def _title(rec: dict[str, Any], drop: set[str] = frozenset()) -> str:
+    label = ((rec.get("analysis") or {}).get("label") or "").strip()
+    if label:
+        t = label
+    else:
+        words = _raw_title(rec).split()
+        t = " ".join([w for w in words if _norm(w) not in drop] or words).strip(" -–—·,")
+    return t if len(t) <= TITLE_MAX else t[: TITLE_MAX - 1] + "…"
+
+
+def format_line(mission: Mission, rec: dict[str, Any], rank: int | None, new: bool = False,
+                drop: set[str] = frozenset()) -> str:
+    """One deal on one line: rank, overall score, linked title, price, distance, then the
+    score of each scoring criterion (short labels). Details stay in /dealhound results."""
     esc = html.escape
+    a = rec.get("analysis") or {}
+    score = a.get("score")
+    s = f"{score:.1f}" if isinstance(score, (int, float)) else "–"
+    if a.get("eliminatory"):
+        s = f"<s>{s}</s>"
     km = distance_km(mission.home, rec)
-    place = esc(rec.get("location") or "") + (f" ({km} km)" if km is not None else "")
-    head = f"{rank}. " if rank else ""
-    tag = "🆕 " if new else ""
-    verdict = " · <b>écartée</b>" if a.get("eliminatory") else ""
-    lines = [f"{tag}<b>{head}{a.get('score', '?')}/10</b>{verdict} · {_price(rec)} · {place}",
-             f'<a href="{esc(rec.get("url") or "", quote=True)}">{esc(rec.get("title") or "?")}</a>']
+    link = f'<a href="{esc(rec.get("url") or "", quote=True)}">{esc(_title(rec, drop))}</a>'
     scores = a.get("scores") or {}
-    if scores:
-        lines.append(" · ".join(f"{esc(c.label)} {scores.get(c.id, '–')}" for c in mission.scoring))
-    if a.get("summary"):
-        lines.append(esc(a["summary"]))
-    if a.get("red_flags"):
-        lines.append("⚠ " + esc("; ".join(a["red_flags"])))
-    return "\n".join(lines)
+    crit = " ".join(f"{esc(c.short)} {scores.get(c.id, '–')}" for c in mission.scoring)
+    marks = ("🆕" if new else "") + ("⚠" if a.get("red_flags") else "")
+    head = f"{rank}. " if rank else ""
+    dist = f" · {km} km" if km is not None else ""
+    return f"{head}<b>{s}</b> {link} · {_price(rec)}{dist} | {crit} {marks}".rstrip()
+
+
+def _block(mission: Mission, header: str, recs: list[dict[str, Any]],
+           order: dict[str, int], fresh: set[str]) -> str:
+    legend = "🆕 nouvelle · ⚠ red flag · ↓ prix en baisse"
+    drop = common_words(recs)
+    lines = [format_line(mission, r, order.get(r["id"]), r["id"] in fresh, drop) for r in recs]
+    return f"{header}\n<i>{legend}</i>\n\n" + "\n".join(lines)
+
+
+def top_message(mission: Mission, state: dict[str, Any], n: int,
+                fresh: set[str] = frozenset(), note: str = "") -> str:
+    """The current top n, one deal per line."""
+    ranking = ranked(state)
+    order = {r["id"]: i for i, r in enumerate(ranking, 1)}
+    header = f"🔎 <b>{html.escape(mission.name)}</b> · top {min(n, len(ranking))}" + (
+        f" · {note}" if note else "")
+    return _block(mission, header, ranking[:n], order, set(fresh))
 
 
 def build_message(mission: Mission, state: dict[str, Any], analyzed: list[str],
@@ -191,35 +246,25 @@ def build_message(mission: Mission, state: dict[str, Any], analyzed: list[str],
     """Message for this analysis run, or None when the mode says nothing to report."""
     if mode == "off" or not analyzed:
         return None
-    esc = html.escape
-    order = {r["id"]: i for i, r in enumerate(ranked(state), 1)}
     fresh = set(analyzed)
-    name = f"🔎 <b>{esc(mission.name)}</b>"
+    order = {r["id"]: i for i, r in enumerate(ranked(state), 1)}
+    name = f"🔎 <b>{html.escape(mission.name)}</b>"
 
     if mode == "analysis":
-        top = ranked(state)[:ANALYSIS_TOP]
-        parts = [f"{name} · analyse : {len(analyzed)} annonce(s) notée(s)"]
-        if syn := (state.get("synthesis") or {}).get("text"):
-            parts.append(esc(syn))
-        parts.append(f"<b>Top {len(top)}</b>")
-        parts += [format_deal(mission, r, order[r["id"]], r["id"] in fresh) for r in top]
-        return "\n\n".join(parts)
+        return top_message(mission, state, top_n, fresh, f"{len(analyzed)} annonce(s) notée(s)")
 
     if mode == "new_deal":
         recs = sorted((state["listings"][i] for i in analyzed if i in state["listings"]),
                       key=lambda r: (r.get("analysis") or {}).get("score") or 0, reverse=True)
-        parts = [f"{name} · {len(recs)} nouvelle(s) annonce(s) notée(s)"]
-        parts += [format_deal(mission, r, order.get(r["id"]), True) for r in recs]
-        return "\n\n".join(parts)
+        return _block(mission, f"{name} · {len(recs)} annonce(s) notée(s)", recs, order, fresh)
 
     # top: listings scored in this run that were not in the top N before and are now
     now_top = top_ids(state, top_n)
     entrants = [i for i in now_top if i in fresh and i not in set(prev_top)]
     if not entrants:
         return None
-    parts = [f"{name} · {len(entrants)} nouveau(x) deal(s) dans le top {top_n}"]
-    parts += [format_deal(mission, state["listings"][i], order[i], True) for i in entrants]
-    return "\n\n".join(parts)
+    return _block(mission, f"{name} · {len(entrants)} nouveau(x) dans le top {top_n}",
+                  [state["listings"][i] for i in entrants], order, fresh)
 
 
 def notify_after_analysis(mission: Mission, state: dict[str, Any], analyzed: list[str],
@@ -275,15 +320,51 @@ def cmd_test(cfg: NotifyConfig) -> int:
     return 0 if reached == len(cfg.chat_ids) else 1
 
 
+def cmd_preview(cfg: NotifyConfig, mission_id: str, do_send: bool) -> int:
+    from pathlib import Path
+
+    from dealhound import store
+    from dealhound.models import MissionError
+
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", mission_id):
+        print(f"invalid mission id: {mission_id}", file=sys.stderr)
+        return 2
+    root = Path(__file__).resolve().parent.parent
+    try:
+        mission = Mission.load(root / "missions" / mission_id)
+    except MissionError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 2
+    state = store.load_mission_state(mission)
+    if not ranked(state):
+        print("aucune annonce notée pour l'instant", file=sys.stderr)
+        return 1
+    text = top_message(mission, state, cfg.top_n, note="aperçu")
+    if not do_send:
+        print(text)
+        return 0
+    reached = send(cfg, text)
+    print(f"sent to {reached}/{len(cfg.chat_ids)} chat(s)")
+    return 0 if reached == len(cfg.chat_ids) else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="python -m dealhound.notify", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("cmd", choices=("discover", "test"))
+    p.add_argument("cmd", choices=("discover", "test", "preview"))
+    p.add_argument("mission", nargs="?", help="mission id (preview)")
+    p.add_argument("--send", action="store_true", help="preview: send it instead of printing")
     args = p.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     try:
         cfg = NotifyConfig.from_env()
-        return cmd_discover(cfg) if args.cmd == "discover" else cmd_test(cfg)
+        if args.cmd == "discover":
+            return cmd_discover(cfg)
+        if args.cmd == "test":
+            return cmd_test(cfg)
+        if not args.mission:
+            p.error("preview needs a mission id")
+        return cmd_preview(cfg, args.mission, args.send)
     except (NotifyError, ValueError) as e:
         print(f"ERROR: {e}", file=sys.stderr)
         return 1

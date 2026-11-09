@@ -12,7 +12,8 @@ Shape:
       "first_seen": "<iso>", "last_seen": "<iso>", "gone_at": null | "<iso>",
       "price_history": [["<iso>", price], ...],
       "status": "new" | "analyzed" | "gone",
-      "analysis": null | {...}   # filled by analyze.py
+      "analysis": null | {...},  # filled by analyze.py
+      "blacklisted": {...}       # only when in the mission's blacklist.yaml (set on load)
     }
   }
 }
@@ -61,6 +62,18 @@ class MergeStats:
 def empty_state(mission: str) -> dict[str, Any]:
     return {"version": STATE_VERSION, "mission": mission, "changed_at": None,
             "collected_at": None, "listings": {}}
+
+
+def is_active(rec: dict[str, Any]) -> bool:
+    """Still on sale and not rejected by the user: what rankings and analyses consider."""
+    return rec["status"] != "gone" and not rec.get("blacklisted")
+
+
+def load_mission_state(mission: Any) -> dict[str, Any]:
+    """State of a mission with its blacklist applied (use this, not load_state)."""
+    from dealhound import blacklist
+    state = load_state(mission.state_path, mission.name)
+    return blacklist.apply(state, blacklist.load(mission.dir))
 
 
 def load_state(path: Path, mission: str) -> dict[str, Any]:

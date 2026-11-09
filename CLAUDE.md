@@ -51,9 +51,17 @@ ignoré par git** : ne jamais le commiter ni en recopier le contenu dans un fich
   `deals.md` régénéré à partir de cet état pour la lecture humaine.
 - **Notification Telegram** à la fin de chaque analyse, selon `NOTIFY_MODE` : `top`
   (défaut : une annonce notée pendant l'analyse entre dans le top `NOTIFY_TOP_N`),
-  `analysis` (synthèse + top 5 à chaque analyse, pour régler les critères), `new_deal`
-  (toutes les annonces notées), `off`. Override par mission : `notify: {mode: …}`.
-  Code : `dealhound/notify.py` ; mode d'emploi : `docs/telegram.md`.
+  `analysis` (top N à chaque analyse, pour régler les critères), `new_deal` (toutes les
+  annonces notées), `off`. Override par mission : `notify: {mode: …}`. Format compact :
+  un deal par ligne (note, étiquette `label` de l'analyse cliquable, prix, distance,
+  note par critère avec son abréviation `short`). Code : `dealhound/notify.py` ; mode
+  d'emploi : `docs/telegram.md`.
+- **Liste noire** par mission (`missions/<id>/blacklist.yaml`, `dealhound/blacklist.py`) :
+  annonces écartées par l'utilisateur, avec une raison. Appliquée au chargement
+  (`store.load_mission_state` pose `blacklisted` ; `store.is_active` les exclut) : plus
+  classées, analysées, affichées ni notifiées ; leurs raisons sont données à l'analyse.
+  Toujours charger l'état d'une mission avec `load_mission_state`, et filtrer avec
+  `is_active`.
 
 ## Contraintes d'environnement
 
@@ -110,6 +118,7 @@ dealHound/
         ├── scoring.md      # prompt de notation complet (rédigé à la création)
         ├── context.md      # (optionnel) contexte libre pour l'analyse : profil, budget,
         │                   #   méthode de calcul, annonces déjà vues, red flags
+        ├── blacklist.yaml  # (optionnel) annonces écartées par l'utilisateur + raison
         ├── state.json      # état machine (source de vérité, ne pas éditer à la main)
         └── deals.md        # vue générée, lisible par l'utilisateur
 ```
