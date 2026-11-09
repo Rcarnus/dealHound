@@ -8,7 +8,9 @@ description: >
   Je cherche une Fender Stratocaster (Mexique ou USA), bon état, idéalement
   avec étui. Éviter les copies et les modèles Squier.
 
-# Filtres durs communs à toutes les sources (appliqués par les scripts).
+# ---------------------------------------------------------------------------
+# Critères de RECHERCHE : filtres envoyés aux sources (ce qui est collecté).
+# Communs à toutes les sources :
 filters:
   query: "fender stratocaster"
   # price_min: 200
@@ -40,11 +42,33 @@ sources:
     #   regdate: {min: 2020}
     #   mileage: {max: 160000}
 
-# Critères souples, évalués par Claude lors de l'analyse.
-analysis:
-  must_have: ["Fender authentique (pas Squier)"]
-  nice_to_have: ["étui", "micros d'origine"]
-  red_flags: ["prix anormalement bas", "paiement hors plateforme"]
+# ---------------------------------------------------------------------------
+# Critères de NOTATION : comment l'analyse (claude -p, sur le serveur) classe les
+# annonces collectées. Chaque critère est noté 0-10 ; la note globale est la moyenne
+# pondérée. Le prompt complet (barèmes détaillés, red flags, cas éliminatoires) est
+# dans scoring.md, à côté de ce fichier.
+scoring:
+  criteria:
+    - id: prix              # slug : a-z, 0-9, _
+      label: Prix
+      weight: 3
+      description: "10 = nettement sous le marché pour l'état ; 5 = prix du marché ; 0 = au-dessus du budget"
+    - id: modele
+      label: Modèle / version
+      weight: 2
+      description: "10 = USA ou Mexique, série recherchée ; 5 = version correcte ; 0 = Squier ou copie"
+    - id: etat
+      label: État
+      weight: 2
+      description: "10 = comme neuve, d'origine ; 5 = traces d'usage normales ; 0 = à réparer ou modifiée"
+    - id: distance
+      label: Distance
+      weight: 1
+      description: "10 = < 20 km du domicile ; 5 = ~60 km ; 0 = > 150 km sans envoi possible"
+    - id: confiance
+      label: Confiance vendeur
+      weight: 1
+      description: "10 = annonce complète, photos réelles, remise en main propre ; 0 = signaux d'arnaque"
 
 notify:
   min_score: 8

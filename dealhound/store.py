@@ -32,7 +32,8 @@ from dealhound.models import Listing
 STATE_VERSION = 1
 
 # Fields refreshed from the source on every sighting.
-_REFRESHED = ("url", "title", "location", "published", "description", "attributes")
+_REFRESHED = ("url", "title", "location", "published", "description", "attributes",
+              "lat", "lng")
 
 
 def now_iso() -> str:

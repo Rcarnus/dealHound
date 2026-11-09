@@ -1,7 +1,8 @@
 """Assemble the context given to the analysis (claude -p).
 
 Order: general user context (context/*.md, README excluded), then the mission
-(description, soft criteria, missions/<name>/context.md).
+(description, search criteria, missions/<name>/context.md). The scoring prompt and
+criteria are added by dealhound.analysis.
 """
 
 from __future__ import annotations
@@ -27,10 +28,10 @@ def user_context(context_dir: Path = CONTEXT_DIR) -> str:
 
 def mission_context(mission: Mission) -> str:
     parts = [f"# Mission : {mission.name}", mission.description]
-    if mission.analysis:
-        parts.append("## Critères d'analyse\n```yaml\n"
-                     + yaml.safe_dump(mission.analysis, allow_unicode=True, sort_keys=False).strip()
-                     + "\n```")
+    search = {"filters": mission.filters, "sources": mission.sources}
+    parts.append("## Critères de recherche (filtres déjà appliqués par les sources)\n```yaml\n"
+                 + yaml.safe_dump(search, allow_unicode=True, sort_keys=False).strip()
+                 + "\n```")
     if extra := mission.context.strip():
         parts.append(f"<!-- missions/{mission.dir.name}/context.md -->\n{extra}")
     return "\n\n".join(p for p in parts if p)

@@ -117,7 +117,16 @@ def parse_ad(ad: dict[str, Any]) -> Listing:
         published=ad.get("first_publication_date", ""),
         description=ad.get("body", ""),
         attributes=attributes,
+        lat=_float(loc.get("lat")),
+        lng=_float(loc.get("lng")),
     )
+
+
+def _float(value: Any) -> float | None:
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 class Leboncoin:

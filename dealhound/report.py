@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any
 
+from dealhound.geo import distance_km
 from dealhound.models import Mission
 
 GONE_WINDOW_DAYS = 30
@@ -49,6 +50,12 @@ def _link(rec: dict[str, Any]) -> str:
     return f"[{rec['source']}]({rec['url']})" if rec.get("url") else rec["source"]
 
 
+def _place(rec: dict[str, Any], home: tuple[float, float] | None) -> str:
+    km = distance_km(home, rec)
+    loc = _cell(rec.get("location"))
+    return f"{loc} ({km} km)" if km is not None else loc
+
+
 def render(mission: Mission, state: dict[str, Any]) -> str:
     recs = list(state["listings"].values())
     active = [r for r in recs if r["status"] != "gone"]
@@ -71,15 +78,35 @@ def render(mission: Mission, state: dict[str, Any]) -> str:
         "",
     ]
 
+    home = mission.home
+    if syn := state.get("synthesis"):
+        out += [f"## Synthèse ({_date(syn.get('at'))})", "", _cell(syn.get("text")), ""]
+
+    if mission.scoring:
+        out += ["## Critères de notation", "",
+                "| Critère | Poids | Barème |", "|---|---:|---|"]
+        out += [f"| {_cell(c.label)} | {c.weight:g} | {_cell(c.description)} |"
+                for c in mission.scoring]
+        out.append("")
+
     if analyzed:
         analyzed.sort(key=lambda r: r["analysis"].get("score", 0), reverse=True)
+        crit = mission.scoring
         out += ["## Meilleurs deals", "",
-                "| Score | Prix | Annonce | Lieu | Avis | Lien |",
-                "|---:|---:|---|---|---|---|"]
+                "| Score | " + " | ".join(_cell(c.label) for c in crit)
+                + " | Prix | Annonce | Lieu | Avis | Lien |",
+                "|---:|" + "---:|" * len(crit) + "---:|---|---|---|---|"]
         for r in analyzed:
             a = r["analysis"]
-            out.append(f"| {_cell(a.get('score'))}/10 | {_price(r)} | {_title(r)} | "
-                       f"{_cell(r.get('location'))} | {_cell(a.get('summary'))} | {_link(r)} |")
+            scores = a.get("scores") or {}
+            avis = _cell(a.get("summary"))
+            if a.get("eliminatory"):
+                avis = "**Écartée.** " + avis
+            if a.get("red_flags"):
+                avis += " ⚠ " + _cell("; ".join(a["red_flags"]))
+            out.append(f"| **{_cell(a.get('score'))}** | "
+                       + " | ".join(_cell(scores.get(c.id, "-")) for c in crit)
+                       + f" | {_price(r)} | {_title(r)} | {_place(r, home)} | {avis} | {_link(r)} |")
         out.append("")
 
     out += [f"## À analyser ({len(pending)})", ""]
@@ -87,7 +114,7 @@ def render(mission: Mission, state: dict[str, Any]) -> str:
         pending.sort(key=lambda r: r.get("published") or r["first_seen"], reverse=True)
         out += ["| Prix | Annonce | Lieu | Publiée | Lien |", "|---:|---|---|---|---|"]
         for r in pending:
-            out.append(f"| {_price(r)} | {_title(r)} | {_cell(r.get('location'))} | "
+            out.append(f"| {_price(r)} | {_title(r)} | {_place(r, home)} | "
                        f"{_date(r.get('published'))} | {_link(r)} |")
     else:
         out.append("Rien de nouveau.")

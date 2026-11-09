@@ -5,13 +5,24 @@ Le projet collecte régulièrement les annonces correspondant à des recherches 
 puis utilise Claude (via `claude` CLI) pour analyser les annonces et remonter les
 meilleurs deals à l'utilisateur.
 
-> Statut (2026-11-08) : collecte leboncoin, `deals.md` et déploiement sur le Pi faits ;
-> analyse (`analyze.py`) et notifications à faire. Les points marqués **[À TRANCHER]**
-> sont des choix de design pas encore validés. Mode d'emploi utilisateur : `README.md`.
+> Statut (2026-11-09) : collecte leboncoin, analyse automatique par `claude -p` sur le
+> serveur, `deals.md`, déploiement sur le Pi et skill `/dealhound` faits ; notifications
+> à faire. Les points marqués **[À TRANCHER]** sont des choix de design pas encore
+> validés. Mode d'emploi : `README.md` ; préparation d'un serveur : `docs/server-setup.md`.
+
+## Deux sortes de critères : ne jamais les mélanger
+
+- **Critères de recherche** : filtres envoyés aux sources (`filters` + `sources.<source>`
+  dans `mission.yaml`). Ils décident de ce qui est **collecté**.
+- **Critères de notation** : ce qui **classe** les annonces collectées (prix, distance du
+  domicile, version/variante, état, vendeur…). `scoring.criteria` dans `mission.yaml`
+  (id, label, weight, barème) + le **prompt de notation complet** `missions/<id>/scoring.md`,
+  rédigé à la création de la recherche. L'analyse note chaque critère 0-10 ; la note
+  globale est la moyenne pondérée, calculée par le code.
 
 ## Contexte utilisateur : à lire d'abord
 
-`context/` décrit l'utilisateur (Romain, L'Union près de Toulouse) et ses règles
+`context/` décrit l'utilisateur (identité, domicile, foyer, finances) et ses règles
 générales : `profil.md`, `achats.md`, `communication.md`. **Avant de créer ou modifier
 une recherche, lire ces fichiers** : lieu de départ et coordonnées, budget tout compris,
 pas de négociation, red flags, façon de présenter les résultats. Ce qui est propre à une
@@ -26,12 +37,13 @@ recherche va dans `missions/<nom>/context.md`, pas dans `context/`.
   Le même code traite toutes les missions.
 - **Des sources de données** : un module par site d'annonces, qui interroge le site et
   renvoie les annonces dans un format commun.
-- **Deux boucles, deux rythmes** :
-  1. **Collecte** (fréquente, ex. toutes les 30 min) : script Python déterministe, sans
-     LLM. Interroge les sources, déduplique, met à jour l'état de chaque mission.
-  2. **Analyse** (rare, ex. 3 fois par jour) : appel à `claude -p` (mode headless) qui
-     évalue les nouvelles annonces au regard des critères de la mission, les classe et
-     rédige une synthèse.
+- **Deux boucles, deux rythmes, sur le serveur, à intervalle fixe** (pas de
+  déclenchement par événement pour l'instant) :
+  1. **Recherche / collecte** toutes les `SEARCH_INTERVAL_MIN` minutes (défaut 30) :
+     Python déterministe, sans inférence.
+  2. **Analyse** toutes les `ANALYSIS_INTERVAL_MIN` minutes (défaut 180) : `claude -p`
+     note les nouvelles annonces et les baisses de prix selon les critères de notation,
+     et rédige une synthèse.
 - **Stockage local** : un état machine en JSON par mission (source de vérité), et un
   `deals.md` régénéré à partir de cet état pour la lecture humaine.
 - **Notification** : les meilleurs deals (au-dessus d'un seuil de score) sont aussi
@@ -60,14 +72,20 @@ dealHound/
 ├── CLAUDE.md
 ├── README.md               # mode d'emploi
 ├── requirements.txt        # lbc, pyyaml
+├── config.example.env      # modèle de config ; la vraie (config.env) est ignorée par git
 ├── context/                # contexte utilisateur général (ignoré par git sauf README)
+├── docs/server-setup.md    # préparer un serveur (paquets, Claude Code, auth, tests)
 ├── deploy/
-│   ├── config.env          # serveur cible, horaires des timers
-│   └── deploy.sh           # check | push | status | run | logs | pull | retire
-├── .claude/skills/deploy-remote/SKILL.md   # skill Claude Code de déploiement
+│   ├── deploy.sh           # [--host H] check|push|list|results|status|run|test-claude|logs|pull|retire
+│   └── py.sh               # lance le Python local (LOCAL_PYTHON) depuis la racine
+├── .claude/skills/dealhound/SKILL.md   # skill /dealhound : interface principale
 ├── dealhound/
+│   ├── analysis.py         # prompt, schéma JSON, appel claude -p, note pondérée
+│   ├── cli.py              # list | results | doctor (JSON), local ou sur le serveur
 │   ├── context.py          # assemble context/ + mission pour l'analyse
-│   ├── models.py           # Listing, Mission (chargement de mission.yaml)
+│   ├── geo.py              # distance domicile -> annonce (à vol d'oiseau)
+│   ├── lock.py             # verrou commun collecte/analyse (.dealhound.lock)
+│   ├── models.py           # Listing, Mission, Criterion (chargement de mission.yaml)
 │   ├── store.py            # state.json : chargement, fusion, écriture atomique
 │   ├── report.py           # rendu de deals.md à partir de l'état
 │   ├── notify.py           # (à faire) notifications push
@@ -75,14 +93,15 @@ dealHound/
 │       ├── __init__.py     # REGISTRY : nom dans mission.yaml -> source
 │       ├── base.py         # interface : search(filters) -> SearchResult(listings, complete)
 │       └── leboncoin.py
-├── collect.py              # boucle de collecte (toutes les missions)   [fait]
-├── analyze.py              # (à faire) boucle d'analyse via `claude -p`
+├── collect.py              # boucle de recherche (toutes les missions)
+├── analyze.py              # boucle d'analyse via `claude -p`
 ├── prompts/
-│   └── analyze.md          # (à faire) prompt d'analyse envoyé à Claude
+│   └── analyze.md          # prompt système générique de l'analyse
 ├── examples/mission/       # mission d'exemple commentée (seule mission versionnée)
 └── missions/               # vraies recherches : ENTIÈREMENT ignoré par git
     └── <nom>/
-        ├── mission.yaml    # critères de la recherche
+        ├── mission.yaml    # critères de recherche + critères de notation
+        ├── scoring.md      # prompt de notation complet (rédigé à la création)
         ├── context.md      # (optionnel) contexte libre pour l'analyse : profil, budget,
         │                   #   méthode de calcul, annonces déjà vues, red flags
         ├── state.json      # état machine (source de vérité, ne pas éditer à la main)
@@ -107,8 +126,11 @@ Chaque source normalise ses résultats vers ce format :
 | `description`   | texte de l'annonce (tronqué si besoin)         |
 | `first_seen`    | première détection par dealHound               |
 | `last_seen`     | dernière détection                             |
+| `lat`, `lng`    | coordonnées de l'annonce (pour la distance au domicile) |
 | `status`        | `new`, `analyzed`, `gone` (annonce disparue)   |
-| `analysis`      | score, justification, red flags (rempli par Claude) |
+| `analysis`      | `score` (global, pondéré), `scores` (par critère), `eliminatory`, `summary`, `red_flags`, `questions`, `analyzed_at`, `model` |
+
+`state.json` porte aussi `synthesis` (`text`, `at`) : la synthèse de la dernière analyse.
 
 ### Boucle de collecte (`collect.py`)
 
@@ -135,54 +157,66 @@ Règles :
 - Aucun appel LLM : rapide, gratuit, peut tourner souvent.
 - Une source en erreur est loggée et n'empêche pas les autres de tourner. Ses annonces
   ne sont pas touchées.
-- Verrou `fcntl` sur `.collect.lock` : un second lancement concurrent sort sans rien faire.
+- Verrou commun avec l'analyse (`dealhound/lock.py`, `.dealhound.lock`) : si une
+  collecte ou une analyse tourne, la collecte saute ce passage.
 - Pauses aléatoires entre deux requêtes (3–8 s entre sources, 2–5 s entre pages).
 - Codes de sortie : 0 ok, 1 au moins une source ou mission en échec, 2 configuration
   invalide.
 
 ### Boucle d'analyse (`analyze.py`)
 
-Pour chaque mission :
-1. Sélectionne les annonces à analyser (`new`, ou prix en baisse).
-2. S'il n'y en a aucune, ne lance pas Claude (économie d'appels).
-3. Appelle `claude -p` avec `prompts/analyze.md`, la mission (y compris les critères
-   « souples » en langage naturel) et les annonces, en demandant une sortie JSON.
-4. Claude attribue un score (0–10), justifie, signale les red flags (prix suspect,
-   arnaque probable, annonce incomplète) et rédige une synthèse.
-5. Enregistre l'analyse dans `state.json`, passe les annonces en `analyzed`,
-   régénère `deals.md`, et envoie une notification pour les annonces au-dessus de
-   `notify.min_score`.
+```bash
+python analyze.py                            # toutes les missions
+python analyze.py --mission <id> --limit 5   # au plus 5 annonces
+python analyze.py --mission <id> --dry-run   # affiche prompt + schéma, sans inférence
+```
 
-Notes `claude` CLI :
-- Mode non interactif : `claude -p --output-format json`, prompt passé sur stdin.
-- Restreindre les outils (`--allowedTools`) : l'analyse n'a besoin d'aucun outil,
-  toutes les données sont dans le prompt.
-- Valider le JSON renvoyé ; en cas de sortie invalide, logger et réessayer au
-  prochain passage plutôt que corrompre l'état.
-- L'authentification Claude doit être configurée sur la machine cible (WSL, puis Pi).
+Pour chaque mission ayant des critères de notation :
+1. Sélectionne les annonces `new` (nouvelles, ou repassées en `new` après une baisse de
+   prix). Aucune : pas d'appel.
+2. Par lots de 12, construit le prompt (`dealhound/analysis.py`) : système
+   `prompts/analyze.md` ; contexte utilisateur (`context/`) ; mission (description,
+   critères de recherche, `context.md`) ; `scoring.md` ; tableau des critères de
+   notation ; 5 meilleures annonces déjà notées (pour comparer) ; annonces du lot en JSON
+   (attributs utiles, description tronquée à 2 000 caractères, `distance_km`).
+3. `claude -p --output-format json --tools "" --no-session-persistence
+   --strict-mcp-config --setting-sources "" --system-prompt … --json-schema …` : la
+   réponse (`structured_output`) est validée par un schéma qui exige une note entière
+   0-10 par critère.
+4. Le code calcule la note globale (moyenne pondérée ; plafonnée à 2 si
+   `eliminatory`), enregistre l'analyse, passe les annonces en `analyzed`, met à jour
+   `synthesis`, écrit l'état après chaque lot et régénère `deals.md`. Une entrée
+   invalide, ou une annonce dont le prix a changé entre-temps, reste `new` et sera
+   retentée au passage suivant.
+5. Verrou commun avec la collecte (attente si une collecte tourne).
+
+Modèle : `--model`, sinon `$DEALHOUND_ANALYSIS_MODEL` (posé par l'unité systemd depuis
+`ANALYSIS_MODEL`), sinon le défaut de Claude Code. Coût loggé par lot (testé le
+2026-11-09 sur le Pi : un lot de 3 annonces, prompt d'environ 40 000 caractères, résultat
+pertinent).
 
 ### Fichier `mission.yaml` (exemple)
 
-Modèle commenté et versionné : `examples/mission/` (`mission.yaml` + gabarit de
-`context.md`). Structure :
+Modèle commenté et versionné : `examples/mission/` (`mission.yaml`, `scoring.md`,
+gabarit de `context.md`). Structure :
 
 ```yaml
 name: exemple-guitare
 description: >            # texte libre, repris dans deals.md et dans le prompt
   Je cherche une Fender Stratocaster...
-filters:                  # filtres durs communs à toutes les sources
+filters:                  # critères de RECHERCHE communs à toutes les sources
   query: "fender stratocaster"
   price_min: 0
   price_max: 800
-  location: {city: Lyon, lat: 45.764, lng: 4.8357, radius_km: 100}
-sources:                  # sources activées + filtres propres (écrasent les communs)
+  location: {city: Lyon, lat: 45.764, lng: 4.8357, radius_km: 100}  # centre = domicile
+sources:                  # sources activées + leurs critères de recherche propres
   leboncoin:
     category: "30"
     max_pages: 2
-analysis:                 # critères souples, évalués par Claude
-  must_have: [...]
-  nice_to_have: [...]
-  red_flags: [...]
+scoring:                  # critères de NOTATION (prompt complet : scoring.md)
+  criteria:
+    - {id: prix, label: Prix, weight: 3, description: "10 = … ; 5 = … ; 0 = …"}
+    - {id: distance, label: Distance, weight: 1, description: "…"}
 notify:
   min_score: 8
 ```
@@ -192,9 +226,11 @@ sa fonction de traduction (`build_search_kwargs` pour leboncoin).
 
 ### `deals.md`
 
-Fichier généré, ne pas éditer : il est réécrit à chaque collecte/analyse. Contenu :
-synthèse de la dernière analyse, puis tableau des deals triés par score (titre, prix,
-lieu, score, lien), puis les annonces pas encore analysées, puis les disparues récentes.
+Fichier généré, ne pas éditer : il est réécrit à chaque collecte/analyse (seulement si
+son contenu change). Contenu : synthèse de la dernière analyse, critères de notation,
+tableau des deals triés par note (note globale, une colonne par critère, prix, annonce,
+lieu + distance, avis et red flags), annonces pas encore analysées, disparues récentes.
+`/dealhound results` lit le même état via `cli.py results` sur le serveur.
 
 ### Missions : privées
 
@@ -258,23 +294,42 @@ Règles pour toutes les sources :
 
 ## Déploiement et planification
 
-Skill Claude Code : `.claude/skills/deploy-remote/SKILL.md` (procédure complète). Script :
-`deploy/deploy.sh`, lancé depuis WSL ; configuration dans `deploy/config.env`.
+**Interface principale : le skill `/dealhound`** (`.claude/skills/dealhound/SKILL.md`) :
+`list`, `results <id>`, `new`, `stop <id>`, `config`, `wizard`. Il pilote
+`deploy/deploy.sh` (serveurs) et `deploy/py.sh` (Python local), qui s'appuient sur
+`dealhound/cli.py` pour les sorties JSON. Toute nouvelle fonctionnalité destinée à
+l'utilisateur doit être exposée via ce skill.
 
-- Serveur : `rom@192.168.5.225`, Raspberry Pi, Debian 13 aarch64, Python 3.13, `claude`
-  installé. Installation dans `~/dealhound` avec son propre `.venv`.
-- **systemd timers utilisateur** : `dealhound-collect.timer` (`*:0/30`, délai aléatoire
-  ≤ 5 min, `Persistent=true`) ; `dealhound-analyze.timer` (8 h, 13 h, 19 h) installé
-  automatiquement dès que `analyze.py` existe.
+Configuration : `config.env` à la racine (ignoré par git ; modèle `config.example.env`) :
+`DEPLOY_HOST` (serveur par défaut), `EXTRA_HOSTS`, `DEPLOY_DIR`, `SEARCH_INTERVAL_MIN`
+(défaut 30), `ANALYSIS_INTERVAL_MIN` (défaut 180), `ANALYSIS_MODEL` (vide = défaut de
+Claude Code), `LOCAL_PYTHON`. Lu par `deploy.sh` (sourcé) et `cli.py doctor`. Le serveur
+n'a pas de `config.env` : `push` traduit la config en unités systemd.
+`push` écrit la version du code (`git describe`) dans `~/<DEPLOY_DIR>/.deployed` ;
+`check` l'affiche à côté de la version locale.
+
+- Serveur par défaut : celui de `DEPLOY_HOST` dans `config.env` (ne jamais écrire son
+  adresse dans un fichier versionné). Actuellement un Raspberry Pi, Debian 13 aarch64,
+  Python 3.13, `claude` installé. Installation dans `~/<DEPLOY_DIR>` avec son propre `.venv`.
+- **systemd timers utilisateur, à intervalle fixe** (`OnActiveSec` + `OnUnitActiveSec`,
+  délai aléatoire ≤ 5 min) : `dealhound-collect.timer` toutes les `SEARCH_INTERVAL_MIN`
+  (1er passage 2 min après le push), `dealhound-analyze.timer` toutes les
+  `ANALYSIS_INTERVAL_MIN` (1er passage 10 min après). `push` réécrit les unités et
+  redémarre les timers (nouveaux intervalles appliqués). L'unité d'analyse pose
+  `DEALHOUND_ANALYSIS_MODEL` et un `PATH` incluant `~/.local/bin` (claude).
+- Claude Code sur le serveur : installé dans `~/.local/bin`, authentifié une fois
+  (`docs/server-setup.md`). `check` vérifie présence et identifiants ; `test-claude` fait
+  un vrai appel minuscule (~0,02 $). Vérifié le 2026-11-09 sur le Pi : modèle par défaut
+  `claude-opus-5-5`, `structured_output` présent dans la sortie JSON.
 - Logs : journald. Sur ce Debian, les logs des unités utilisateur sont dans le journal
   système : lire avec `journalctl --user-unit 'dealhound-*'` (`journalctl --user` ne
-  trouve rien). `rom` est dans le groupe `adm`.
+  trouve rien). L'utilisateur distant doit être dans le groupe `adm` ou `systemd-journal`.
 - `push` synchronise le code et `context/` (local maître, `--delete`) et les missions
-  données (`mission.yaml`, `context.md`), sans jamais toucher `state.json` / `deals.md`
-  distants.
-- **Linger désactivé** sur le Pi (vérifié le 2026-11-08) : les timers ne tournent que
-  tant que `rom` a une session ouverte. À corriger par l'utilisateur :
-  `sudo loginctl enable-linger rom`.
+  données (`mission.yaml`, `scoring.md`, `context.md`), sans jamais toucher `state.json` /
+  `deals.md` distants.
+- **Linger** : sans lui, les timers ne tournent que tant que l'utilisateur distant a une
+  session ouverte. `deploy.sh check` le signale ; à corriger par l'utilisateur :
+  `sudo loginctl enable-linger <user>`. (Désactivé sur le Pi au 2026-11-08.)
 - Clé SSH : c'est la clé de **WSL** qui doit être autorisée (le script tourne dans WSL),
   pas celle de Windows.
 
@@ -311,9 +366,14 @@ dans `bash -c '...'` via PowerShell casse les guillemets.
 - leboncoin via la lib `lbc` (le HTTP simple est bloqué par DataDome).
 - Planification par systemd timers utilisateur ; déploiement par SSH + rsync.
 - Contexte utilisateur général dans `context/`, contexte de recherche dans la mission.
+- Mission : YAML structuré (critères de recherche + critères de notation) + prompt de
+  notation en Markdown (`scoring.md`), tous deux rédigés par `/dealhound new`.
+- Analyse sur le serveur, à intervalle fixe (pas de déclenchement par événement pour
+  l'instant), sortie structurée validée par JSON Schema, note globale calculée par le
+  code (moyenne pondérée), distance calculée par le code.
 
 ## Décisions ouvertes
 
 - **[À TRANCHER] Canal de notification** : ntfy (simple, sans compte) ou Telegram (bot).
-- **[À TRANCHER] Format de la mission** : YAML structuré (proposé ci-dessus) ou Markdown
-  en langage naturel.
+- **[À TRANCHER] Déclenchement de l'analyse par événement** (ex. juste après une collecte
+  qui trouve du nouveau) plutôt qu'à intervalle fixe.

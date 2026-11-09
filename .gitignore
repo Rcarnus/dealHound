@@ -8,8 +8,9 @@ missions/
 context/*.md
 !context/README.md
 .remote/
+.dealhound.lock
 .collect.lock
-deploy/config.local.env
+config.env
 
 # personal data: original car-search hand-off (ingested into context/ and a private mission)
 contexte_recherche_voiture.md

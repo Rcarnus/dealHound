@@ -13,7 +13,6 @@ Exit codes: 0 ok, 1 at least one source or mission failed, 2 bad usage/config.
 from __future__ import annotations
 
 import argparse
-import fcntl
 import logging
 import random
 import sys
@@ -21,13 +20,13 @@ import time
 from pathlib import Path
 
 from dealhound import report, store
+from dealhound.lock import state_lock
 from dealhound.models import Mission, MissionError
 from dealhound.sources import REGISTRY
 from dealhound.sources.base import SourceError
 
 ROOT = Path(__file__).resolve().parent
 MISSIONS_DIR = ROOT / "missions"
-LOCK_PATH = ROOT / ".collect.lock"
 BETWEEN_QUERIES_S = (3.0, 8.0)  # random pause between two source queries
 
 log = logging.getLogger("collect")
@@ -114,11 +113,9 @@ def main() -> int:
         log.warning("no mission found in %s", MISSIONS_DIR)
         return 0
 
-    with open(LOCK_PATH, "w") as lock:
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            log.warning("another collect.py is running, skipping this run")
+    with state_lock(blocking=False) as locked:
+        if not locked:
+            log.warning("a collection or an analysis is running, skipping this run")
             return 0
 
         all_ok = True

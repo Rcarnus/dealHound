@@ -1,30 +1,51 @@
 #!/usr/bin/env bash
-# Deploy dealHound to a remote Linux host (Raspberry Pi) over SSH, run it with
-# systemd user timers. Run from Linux/WSL. Configuration: deploy/config.env.
+# Deploy dealHound to remote Linux hosts (Raspberry Pi) over SSH, run it with
+# systemd user timers. Run from Linux/WSL. Configuration: config.env at the project
+# root (template: config.example.env). Usually driven by the /dealhound skill.
 #
-#   deploy.sh check                 verify SSH access and remote prerequisites (read-only)
-#   deploy.sh push [mission...]     sync code + context/, install venv and timers,
-#                                   and sync the given missions (mission.yaml, context.md)
-#   deploy.sh status                timers, last runs, missions present on the server
-#   deploy.sh run                   trigger a collection now and show its log
-#   deploy.sh logs [n]              last n journal lines (default 50)
-#   deploy.sh pull <mission>        fetch remote deals.md + state.json into .remote/<mission>/
-#   deploy.sh retire <mission>      stop a mission: move it to missions/.archive/ on the server
+#   deploy.sh [--host H] check              SSH access and remote prerequisites (read-only)
+#   deploy.sh [--host H] push [mission...]  sync code + context/, install venv and timers,
+#                                           and sync the given missions (mission.yaml, scoring.md, context.md)
+#   deploy.sh list                          missions on every configured host (JSON lines)
+#   deploy.sh [--host H] results <mission> [n]   best n deals of a remote mission (JSON)
+#   deploy.sh [--host H] status             timers, last runs, missions present on the server
+#   deploy.sh [--host H] run [collect|analyze]   run a collection (default) or an analysis now
+#   deploy.sh [--host H] test-claude        tiny claude -p call on the server (auth check, ~0.03 $)
+#   deploy.sh [--host H] logs [n]           last n journal lines (default 50)
+#   deploy.sh [--host H] pull <mission>     fetch remote deals.md + state.json into .remote/<mission>/
+#   deploy.sh [--host H] retire <mission>   stop a mission: move it to missions/.archive/ on the server
 #
-# Remote state (state.json, deals.md) is never overwritten by push.
+# --host defaults to DEPLOY_HOST. Remote state (state.json, deals.md) is never
+# overwritten by push.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(dirname "$HERE")"
-# shellcheck source=/dev/null
-source "$HERE/config.env"
-# shellcheck source=/dev/null
-[ -f "$HERE/config.local.env" ] && source "$HERE/config.local.env"
+CONFIG="${DEALHOUND_CONFIG:-$ROOT/config.env}"
+die() { echo "ERROR: $*" >&2; exit 1; }
 
-: "${DEPLOY_HOST:?DEPLOY_HOST not set in deploy/config.env}"
+HOST_OVERRIDE=""
+if [ "${1:-}" = "--host" ]; then
+  [ -n "${2:-}" ] || die "--host needs a value"
+  HOST_OVERRIDE="$2"; shift 2
+fi
+
+[ -f "$CONFIG" ] || die "no config file ($CONFIG): run '/dealhound wizard' in Claude Code, or cp config.example.env config.env"
+# shellcheck source=/dev/null
+source "$CONFIG"
+
+: "${DEPLOY_HOST:?DEPLOY_HOST not set in $CONFIG}"
+[ -n "$HOST_OVERRIDE" ] && DEPLOY_HOST="$HOST_OVERRIDE"
+EXTRA_HOSTS="${EXTRA_HOSTS:-}"
 DEPLOY_DIR="${DEPLOY_DIR:-dealhound}"
-COLLECT_ON_CALENDAR="${COLLECT_ON_CALENDAR:-*:0/30}"
-ANALYZE_ON_CALENDAR="${ANALYZE_ON_CALENDAR:-*-*-* 08,13,19:00}"
+SEARCH_INTERVAL_MIN="${SEARCH_INTERVAL_MIN:-30}"
+ANALYSIS_INTERVAL_MIN="${ANALYSIS_INTERVAL_MIN:-180}"
+ANALYSIS_MODEL="${ANALYSIS_MODEL:-}"
+[[ "$DEPLOY_DIR" =~ ^[A-Za-z0-9._/-]+$ ]] || die "invalid DEPLOY_DIR: $DEPLOY_DIR"
+for v in SEARCH_INTERVAL_MIN ANALYSIS_INTERVAL_MIN; do
+  [[ "${!v}" =~ ^[0-9]+$ ]] && [ "${!v}" -ge 5 ] || die "$v must be a number of minutes >= 5 (got '${!v}')"
+done
+[[ "$ANALYSIS_MODEL" =~ ^[A-Za-z0-9._-]*$ ]] || die "invalid ANALYSIS_MODEL: $ANALYSIS_MODEL"
 
 SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10)
 CODE_PATHS=(dealhound collect.py analyze.py prompts requirements.txt CLAUDE.md context)
@@ -34,14 +55,15 @@ rsh() { ssh "${SSH_OPTS[@]}" "$DEPLOY_HOST" "$@"; }
 # (ssh joins its arguments into one string re-parsed by the remote shell).
 rscript() { ssh "${SSH_OPTS[@]}" "$DEPLOY_HOST" "bash -s -- $(printf '%q ' "$@")"; }
 rsync_to() { rsync -az -e "ssh ${SSH_OPTS[*]}" "$@"; }
-die() { echo "ERROR: $*" >&2; exit 1; }
 need_mission() { [ -n "${1:-}" ] || die "mission name required"; }
 valid_name() { [[ "$1" =~ ^[A-Za-z0-9._-]+$ ]] || die "invalid mission name: $1"; }
+local_version() { git -C "$ROOT" describe --always --dirty 2>/dev/null || echo unknown; }
 
 cmd_check() {
   echo "== $DEPLOY_HOST"
   rsh true 2>/dev/null || die "SSH key login to $DEPLOY_HOST failed. Authorize your key: ssh-copy-id $DEPLOY_HOST"
-  rscript <<'EOS'
+  echo "  info  local code version: $(local_version)"
+  rscript "$DEPLOY_DIR" <<'EOS'
 ok() { echo "  ok    $*"; }; ko() { echo "  FAIL  $*"; FAILED=1; }; warn() { echo "  warn  $*"; }
 FAILED=0
 . /etc/os-release 2>/dev/null && ok "os: ${PRETTY_NAME:-?} ($(uname -m))"
@@ -54,17 +76,24 @@ command -v rsync >/dev/null && ok "rsync" || ko "rsync missing: sudo apt install
 systemctl --user show-environment >/dev/null 2>&1 && ok "systemd user session" || ko "systemd --user unavailable"
 if [ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null)" = yes ]; then ok "linger enabled"
 else warn "linger disabled: timers stop when you log out. Fix: sudo loginctl enable-linger $USER"; fi
-if command -v claude >/dev/null || [ -x "$HOME/.local/bin/claude" ]; then ok "claude cli"
-else warn "claude cli not found (needed by analyze.py only)"; fi
+export PATH="$HOME/.local/bin:$PATH"
+if command -v claude >/dev/null; then
+  ok "claude cli $(claude --version 2>/dev/null | head -1)"
+  if [ -f "$HOME/.claude/.credentials.json" ] || [ -n "${ANTHROPIC_API_KEY:-}${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+    ok "claude credentials present (validate with: deploy.sh test-claude)"
+  else ko "claude not authenticated: see docs/server-setup.md (claude login over ssh -t)"; fi
+else ko "claude cli missing (needed by the analysis): see docs/server-setup.md"; fi
 ok "disk: $(df -h "$HOME" | awk 'NR==2 {print $4 " free"}'), ram: $(free -m | awk '/Mem:/ {print $7 " MB available"}')"
+if [ -f "$HOME/$1/.deployed" ]; then ok "dealhound installed in ~/$1, version $(cat "$HOME/$1/.deployed")"
+else warn "dealhound not installed in ~/$1 yet (deploy.sh push)"; fi
 exit $FAILED
 EOS
 }
 
 install_remote() {
-  rscript "$DEPLOY_DIR" "$COLLECT_ON_CALENDAR" "$ANALYZE_ON_CALENDAR" <<'EOS'
+  rscript "$DEPLOY_DIR" "$SEARCH_INTERVAL_MIN" "$ANALYSIS_INTERVAL_MIN" "$ANALYSIS_MODEL" <<'EOS'
 set -euo pipefail
-DIR="$1"; COLLECT_CAL="$2"; ANALYZE_CAL="$3"
+DIR="$1"; SEARCH_MIN="$2"; ANALYSIS_MIN="$3"; MODEL="$4"
 cd "$HOME/$DIR"
 mkdir -p missions
 
@@ -80,41 +109,44 @@ fi
 
 UD="$HOME/.config/systemd/user"
 mkdir -p "$UD"
-unit() {  # unit <name> <script> <on_calendar> <description>
+unit() {  # unit <name> <script> <interval_min> <first_run_min> <timeout_min> <description>
+  local jitter=$(( $3 / 10 )); [ "$jitter" -gt 5 ] && jitter=5; [ "$jitter" -lt 1 ] && jitter=1
   cat > "$UD/dealhound-$1.service" <<EOF
 [Unit]
-Description=dealHound: $4
+Description=dealHound: $6
 
 [Service]
 Type=oneshot
 WorkingDirectory=%h/$DIR
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=DEALHOUND_ANALYSIS_MODEL=$MODEL
 ExecStart=%h/$DIR/.venv/bin/python $2
 Nice=10
-TimeoutStartSec=30min
+TimeoutStartSec=$5min
 EOF
+  # Fixed interval: first run <first_run_min> after (re)start, then every <interval_min>
+  # after the previous run.
   cat > "$UD/dealhound-$1.timer" <<EOF
 [Unit]
-Description=dealHound: $4 (timer)
+Description=dealHound: $6 (every $3 min)
 
 [Timer]
-OnCalendar=$3
-RandomizedDelaySec=5min
-Persistent=true
+OnActiveSec=$4min
+OnUnitActiveSec=$3min
+RandomizedDelaySec=${jitter}min
+AccuracySec=1min
 
 [Install]
 WantedBy=timers.target
 EOF
 }
-unit collect collect.py "$COLLECT_CAL" "collect listings"
-TIMERS=(dealhound-collect.timer)
-if [ -f analyze.py ]; then
-  unit analyze analyze.py "$ANALYZE_CAL" "analyze listings with claude"
-  TIMERS+=(dealhound-analyze.timer)
-fi
+unit collect collect.py "$SEARCH_MIN" 2 30 "search the sources"
+unit analyze analyze.py "$ANALYSIS_MIN" 10 60 "analyze listings with claude"
+TIMERS=(dealhound-collect.timer dealhound-analyze.timer)
 systemctl --user daemon-reload
-systemctl --user enable --now "${TIMERS[@]}" >/dev/null
-echo "timers enabled: ${TIMERS[*]}"
+systemctl --user enable "${TIMERS[@]}" >/dev/null 2>&1
+systemctl --user restart "${TIMERS[@]}"   # apply new intervals
+echo "timers: search every ${SEARCH_MIN} min, analysis every ${ANALYSIS_MIN} min (model: ${MODEL:-default})"
 EOS
 }
 
@@ -134,21 +166,49 @@ cmd_push() {
 
   for m in "$@"; do
     local files=("missions/$m/mission.yaml")
-    [ -f "missions/$m/context.md" ] && files+=("missions/$m/context.md")
+    for f in context.md scoring.md; do
+      [ -f "missions/$m/$f" ] && files+=("missions/$m/$f")
+    done
     rsh mkdir -p "$DEPLOY_DIR/missions/$m"
     rsync_to "${files[@]}" "$DEPLOY_HOST:$DEPLOY_DIR/missions/$m/"
     echo "mission pushed: $m"
   done
 
   install_remote
+  local ver; ver="$(local_version)"
+  rsh "echo '$ver $(date +%Y-%m-%dT%H:%M:%S%z)' > \"\$HOME/$DEPLOY_DIR/.deployed\""
+  echo "deployed version: $ver"
+}
+
+# One JSON line per host: {"host": ..., "ok": true, "missions": [...]} or an error.
+cmd_list() {
+  local h out
+  for h in $DEPLOY_HOST $EXTRA_HOSTS; do
+    if out="$(DEPLOY_HOST="$h" rsh "cd \"\$HOME/$DEPLOY_DIR\" 2>/dev/null && .venv/bin/python -m dealhound.cli list --json" 2>/dev/null)"; then
+      printf '{"host": "%s", "default": %s, "ok": true, "missions": %s}\n' \
+        "$h" "$([ "$h" = "$DEPLOY_HOST" ] && echo true || echo false)" "$out"
+    else
+      printf '{"host": "%s", "default": %s, "ok": false, "error": "unreachable, or dealhound not installed in ~/%s"}\n' \
+        "$h" "$([ "$h" = "$DEPLOY_HOST" ] && echo true || echo false)" "$DEPLOY_DIR"
+    fi
+  done
+}
+
+cmd_results() {
+  need_mission "${1:-}"; valid_name "$1"
+  local n="${2:-10}"
+  [[ "$n" =~ ^[0-9]+$ ]] || die "results: count must be a number"
+  rsh "cd \"\$HOME/$DEPLOY_DIR\" && .venv/bin/python -m dealhound.cli results '$1' -n $n --json"
 }
 
 cmd_status() {
   rscript "$DEPLOY_DIR" <<'EOS'
 cd "$HOME/$1" 2>/dev/null || { echo "not installed in ~/$1"; exit 1; }
 echo "== timers"; systemctl --user list-timers 'dealhound-*' --all --no-pager | head -n -2
-echo; echo "== last collect run"
-systemctl --user show dealhound-collect.service -p Result -p ExecMainExitTimestamp -p ExecMainStatus --no-pager
+for u in collect analyze; do
+  echo; echo "== last $u run"
+  systemctl --user show "dealhound-$u.service" -p Result -p ExecMainExitTimestamp -p ExecMainStatus --no-pager
+done
 echo; echo "== missions"
 for d in missions/*/; do
   [ -f "$d/mission.yaml" ] || continue
@@ -168,11 +228,36 @@ EOS
 }
 
 cmd_run() {
-  echo "running collection on $DEPLOY_HOST (blocks until done)..."
+  local what="${1:-collect}"
+  case "$what" in collect|analyze) ;; *) die "run: collect or analyze";; esac
+  echo "running $what on $DEPLOY_HOST (blocks until done)..."
   local rc=0
-  rsh systemctl --user start dealhound-collect.service || rc=$?
-  rsh "journalctl --user-unit dealhound-collect.service -n 20 --no-pager -o cat" || true
+  rsh systemctl --user start "dealhound-$what.service" || rc=$?
+  rsh "journalctl --user-unit dealhound-$what.service -n 25 --no-pager -o cat" || true
   return $rc
+}
+
+cmd_test_claude() {
+  rscript <<'EOS'
+export PATH="$HOME/.local/bin:$PATH"
+cd /tmp
+SCHEMA='{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}'
+out=$(echo 'Réponds ok=true.' | timeout 180 claude -p --output-format json --tools "" \
+  --no-session-persistence --strict-mcp-config --setting-sources "" --json-schema "$SCHEMA" 2>&1) \
+  || { echo "FAIL claude call: ${out:0:300}"; exit 1; }
+python3 - "$out" <<'PY'
+import json, sys
+try:
+    d = json.loads(sys.argv[1])
+except ValueError:
+    print("FAIL non-JSON output:", sys.argv[1][:300]); sys.exit(1)
+ok = (d.get("structured_output") or {}).get("ok") is True and not d.get("is_error")
+models = ", ".join((d.get("modelUsage") or {}).keys()) or "?"
+print(("ok  " if ok else "FAIL") + f" claude -p structured output, model {models}, "
+      f"cost {d.get('total_cost_usd', 0):.3f} $" + ("" if ok else f": {str(d.get('result'))[:200]}"))
+sys.exit(0 if ok else 1)
+PY
+EOS
 }
 
 # User-unit logs live in the system journal on Debian (journalctl --user finds nothing);
@@ -206,10 +291,13 @@ EOS
 case "${1:-}" in
   check)  cmd_check ;;
   push)   shift; cmd_push "$@" ;;
+  list)   cmd_list ;;
+  results) shift; cmd_results "$@" ;;
   status) cmd_status ;;
-  run)    cmd_run ;;
+  run)    shift; cmd_run "$@" ;;
+  test-claude) cmd_test_claude ;;
   logs)   shift; cmd_logs "$@" ;;
   pull)   shift; cmd_pull "$@" ;;
   retire) shift; cmd_retire "$@" ;;
-  *) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  *) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac
