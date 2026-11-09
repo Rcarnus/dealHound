@@ -11,6 +11,7 @@
 #   deploy.sh [--host H] status             timers, last runs, missions present on the server
 #   deploy.sh [--host H] run [collect|analyze]   run a collection (default) or an analysis now
 #   deploy.sh [--host H] test-claude        tiny claude -p call on the server (auth check, ~0.03 $)
+#   deploy.sh [--host H] notify-test        send a Telegram test message from the server
 #   deploy.sh [--host H] logs [n]           last n journal lines (default 50)
 #   deploy.sh [--host H] pull <mission>     fetch remote deals.md + state.json into .remote/<mission>/
 #   deploy.sh [--host H] retire <mission>   stop a mission: move it to missions/.archive/ on the server
@@ -46,6 +47,14 @@ for v in SEARCH_INTERVAL_MIN ANALYSIS_INTERVAL_MIN; do
   [[ "${!v}" =~ ^[0-9]+$ ]] && [ "${!v}" -ge 5 ] || die "$v must be a number of minutes >= 5 (got '${!v}')"
 done
 [[ "$ANALYSIS_MODEL" =~ ^[A-Za-z0-9._-]*$ ]] || die "invalid ANALYSIS_MODEL: $ANALYSIS_MODEL"
+NOTIFY_TELEGRAM_CHAT_IDS="${NOTIFY_TELEGRAM_CHAT_IDS:-}"
+NOTIFY_MODE="${NOTIFY_MODE:-top}"
+NOTIFY_TOP_N="${NOTIFY_TOP_N:-10}"
+[[ "$NOTIFY_TELEGRAM_CHAT_IDS" =~ ^(-?[0-9]+( +-?[0-9]+)*)?$ ]] || die "NOTIFY_TELEGRAM_CHAT_IDS: numeric chat ids, space-separated"
+[[ "$NOTIFY_MODE" =~ ^(top|top10|analysis|each_analysis|new_deal|new|off|none)$ ]] || die "invalid NOTIFY_MODE: $NOTIFY_MODE"
+[[ "$NOTIFY_TOP_N" =~ ^[0-9]+$ ]] && [ "$NOTIFY_TOP_N" -ge 1 ] || die "NOTIFY_TOP_N must be a number >= 1"
+SECRETS="$ROOT/secrets.env"
+REMOTE_SECRETS='.config/dealhound/secrets.env'   # relative to the remote $HOME
 
 SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10)
 CODE_PATHS=(dealhound collect.py analyze.py prompts requirements.txt CLAUDE.md context)
@@ -91,9 +100,11 @@ EOS
 }
 
 install_remote() {
-  rscript "$DEPLOY_DIR" "$SEARCH_INTERVAL_MIN" "$ANALYSIS_INTERVAL_MIN" "$ANALYSIS_MODEL" <<'EOS'
+  rscript "$DEPLOY_DIR" "$SEARCH_INTERVAL_MIN" "$ANALYSIS_INTERVAL_MIN" "$ANALYSIS_MODEL" \
+          "$NOTIFY_TELEGRAM_CHAT_IDS" "$NOTIFY_MODE" "$NOTIFY_TOP_N" "$REMOTE_SECRETS" <<'EOS'
 set -euo pipefail
 DIR="$1"; SEARCH_MIN="$2"; ANALYSIS_MIN="$3"; MODEL="$4"
+CHATS="$5"; NOTIFY="$6"; TOP_N="$7"; SECRETS_REL="$8"
 cd "$HOME/$DIR"
 mkdir -p missions
 
@@ -120,6 +131,8 @@ Type=oneshot
 WorkingDirectory=%h/$DIR
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=DEALHOUND_ANALYSIS_MODEL=$MODEL
+Environment="NOTIFY_TELEGRAM_CHAT_IDS=$CHATS" NOTIFY_MODE=$NOTIFY NOTIFY_TOP_N=$TOP_N
+EnvironmentFile=-%h/$SECRETS_REL
 ExecStart=%h/$DIR/.venv/bin/python $2
 Nice=10
 TimeoutStartSec=$5min
@@ -147,6 +160,28 @@ systemctl --user daemon-reload
 systemctl --user enable "${TIMERS[@]}" >/dev/null 2>&1
 systemctl --user restart "${TIMERS[@]}"   # apply new intervals
 echo "timers: search every ${SEARCH_MIN} min, analysis every ${ANALYSIS_MIN} min (model: ${MODEL:-default})"
+n_chats=$(wc -w <<< "$CHATS")
+secrets_state=$([ -f "$HOME/$SECRETS_REL" ] && echo "secrets ok" || echo "no secrets file")
+echo "notify: mode $NOTIFY, top $TOP_N, $n_chats chat(s), $secrets_state"
+EOS
+}
+
+# secrets.env -> ~/.config/dealhound/secrets.env on the server, readable by its owner only.
+push_secrets() {
+  [ -f "$SECRETS" ] || { echo "no secrets.env: notifications disabled on the server"; return 0; }
+  rsh "umask 077 && mkdir -p \"\$HOME/$(dirname "$REMOTE_SECRETS")\""
+  rsync -a --chmod=F600 -e "ssh ${SSH_OPTS[*]}" "$SECRETS" "$DEPLOY_HOST:$REMOTE_SECRETS"
+  echo "secrets pushed (mode 600)"
+}
+
+cmd_notify_test() {
+  [ -n "$NOTIFY_TELEGRAM_CHAT_IDS" ] || die "NOTIFY_TELEGRAM_CHAT_IDS is empty in config.env"
+  rscript "$DEPLOY_DIR" "$REMOTE_SECRETS" "$NOTIFY_TELEGRAM_CHAT_IDS" "$NOTIFY_MODE" "$NOTIFY_TOP_N" <<'EOS'
+set -euo pipefail
+cd "$HOME/$1"
+[ -f "$HOME/$2" ] || { echo "FAIL no ~/$2 on the server: run deploy.sh push"; exit 1; }
+set -a; . "$HOME/$2"; set +a
+NOTIFY_TELEGRAM_CHAT_IDS="$3" NOTIFY_MODE="$4" NOTIFY_TOP_N="$5" .venv/bin/python -m dealhound.notify test
 EOS
 }
 
@@ -174,6 +209,7 @@ cmd_push() {
     echo "mission pushed: $m"
   done
 
+  push_secrets
   install_remote
   local ver; ver="$(local_version)"
   rsh "echo '$ver $(date +%Y-%m-%dT%H:%M:%S%z)' > \"\$HOME/$DEPLOY_DIR/.deployed\""
@@ -296,8 +332,9 @@ case "${1:-}" in
   status) cmd_status ;;
   run)    shift; cmd_run "$@" ;;
   test-claude) cmd_test_claude ;;
+  notify-test) cmd_notify_test ;;
   logs)   shift; cmd_logs "$@" ;;
   pull)   shift; cmd_pull "$@" ;;
   retire) shift; cmd_retire "$@" ;;
-  *) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  *) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

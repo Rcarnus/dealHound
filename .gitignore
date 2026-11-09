@@ -5,12 +5,14 @@ __pycache__/
 logs/
 # real searches are private: only examples/mission/ is versioned
 missions/
-context/*.md
+# user profile is private: everything in context/ except its README
+context/*
 !context/README.md
 .remote/
 .dealhound.lock
 .collect.lock
 config.env
+secrets.env
 
 # personal data: original car-search hand-off (ingested into context/ and a private mission)
 contexte_recherche_voiture.md

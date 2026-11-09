@@ -9,6 +9,8 @@ with nothing new costs no inference call. Missions without scoring criteria are 
     python analyze.py --mission <id> --dry-run # print the prompt of the first batch, no call
 
 Model: --model, else $DEALHOUND_ANALYSIS_MODEL, else Claude Code's default.
+Telegram notifications at the end of each mission (see dealhound/notify.py), unless
+--no-notify.
 Exit codes: 0 ok, 1 at least one mission failed, 2 bad usage/config.
 """
 
@@ -21,7 +23,7 @@ import os
 import sys
 from pathlib import Path
 
-from dealhound import analysis, report, store
+from dealhound import analysis, notify, report, store
 from dealhound.lock import state_lock
 from dealhound.models import Mission, MissionError
 
@@ -62,6 +64,9 @@ def analyze_mission(mission: Mission, args: argparse.Namespace, model: str) -> b
         print(f"===== SCHEMA =====\n{json.dumps(schema, ensure_ascii=False)}")
         return True
 
+    cfg = notify.NotifyConfig.from_env()
+    prev_top = notify.top_ids(state, cfg.top_n)  # to detect entries into the top N
+    analyzed: list[str] = []
     ok = True
     total_cost = 0.0
     for i, batch in enumerate(batches, 1):
@@ -75,6 +80,7 @@ def analyze_mission(mission: Mission, args: argparse.Namespace, model: str) -> b
             continue
         total_cost += cost or 0.0
         done = analysis.apply_results(state, mission, batch, data, store.now_iso(), model)
+        analyzed += done
         missing = len(batch) - len(done)
         log.info("[%s] batch %d/%d: %d analyzed%s (%.3f $)", mission.name, i, len(batches),
                  len(done), f", {missing} invalid/skipped" if missing else "", cost or 0.0)
@@ -84,6 +90,8 @@ def analyze_mission(mission: Mission, args: argparse.Namespace, model: str) -> b
         store.write_if_changed(mission.deals_path, report.render(mission, state))
 
     log.info("[%s] done, cost %.3f $", mission.name, total_cost)
+    if not args.no_notify:
+        notify.notify_after_analysis(mission, state, analyzed, prev_top, cfg)
     return ok
 
 
@@ -94,6 +102,7 @@ def main() -> int:
     p.add_argument("--batch-size", type=int, default=BATCH_SIZE)
     p.add_argument("--model", default=os.environ.get("DEALHOUND_ANALYSIS_MODEL", ""))
     p.add_argument("--dry-run", action="store_true", help="print the prompt, no inference")
+    p.add_argument("--no-notify", action="store_true", help="do not send Telegram notifications")
     p.add_argument("-v", "--verbose", action="store_true")
     args = p.parse_args()
 

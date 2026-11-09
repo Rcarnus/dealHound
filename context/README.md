@@ -17,13 +17,20 @@ Ce dossier décrit l'utilisateur de dealHound et ses règles générales, valabl
 
 | Fichier            | Contenu                                                        |
 |--------------------|----------------------------------------------------------------|
-| `profil.md`        | Qui est l'utilisateur : identité, lieu, foyer, situation pro et financière, goûts. |
+| `profil.md`        | Qui est l'utilisateur : identité, lieu (+ coordonnées), foyer, situation socio-professionnelle, finances. |
+| `preferences.md`   | Préférences de recherche : ce qu'il cherche en général, arbitrage prix/qualité, état, marques, vendeurs, urgence, ce qu'est un bon deal pour lui. |
 | `achats.md`        | Règles d'achat générales : prix, paiement, vendeurs, signaux d'alerte. |
 | `communication.md` | Comment lui présenter les résultats.                           |
 
+Ces fichiers sont remplis par l'entretien de profil de `/dealhound wizard` (ou seul :
+`/dealhound wizard profil`), qui pose des questions jusqu'à avoir assez de contexte.
+
 ## Règles d'écriture
 
-- Faits seulement, courts, en français. Marquer `[à vérifier]` ce qui n'est pas confirmé.
+- Faits seulement, courts, en français. Marquer `[à vérifier]` ce qui n'est pas confirmé
+  ou déduit, `[non renseigné]` ce que l'utilisateur a préféré ne pas dire.
+- Finances : ordres de grandeur et habitudes, jamais de montants exacts ni d'identifiants
+  (comptes, pièces d'identité), ni d'adresse postale exacte.
 - Pas de détails propres à une recherche ici : ils vont dans la mission.
-- Données personnelles : ces fichiers sont ignorés par git et sont copiés sur le serveur
-  par le skill de déploiement.
+- **Privé** : tout `context/` sauf ce README est ignoré par git (dépôt public). Les
+  fichiers ne sont copiés que sur les serveurs de l'utilisateur, par `deploy.sh push`.

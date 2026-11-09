@@ -15,6 +15,7 @@ import argparse
 import importlib
 import json
 import re
+import shlex
 import sys
 from pathlib import Path
 from typing import Any
@@ -27,7 +28,8 @@ ROOT = Path(__file__).resolve().parent.parent
 MISSIONS_DIR = ROOT / "missions"
 CONTEXT_DIR = ROOT / "context"
 CONFIG_PATH = ROOT / "config.env"
-CONTEXT_FILES = ("profil.md", "achats.md", "communication.md")
+SECRETS_PATH = ROOT / "secrets.env"
+CONTEXT_FILES = ("profil.md", "preferences.md", "achats.md", "communication.md")
 REQUIRED_CONFIG = ("DEPLOY_HOST", "DEPLOY_DIR")
 
 # Attributes worth surfacing in a results table, when the source provides them.
@@ -193,8 +195,40 @@ def read_config(path: Path = CONFIG_PATH) -> dict[str, str]:
     conf: dict[str, str] = {}
     for line in path.read_text(encoding="utf-8").splitlines():
         if m := re.match(r'^\s*([A-Z_][A-Z0-9_]*)=(.*)$', line):
-            conf[m[1]] = m[2].strip().strip('"').strip("'")
+            try:
+                words = shlex.split(m[2], comments=True)
+            except ValueError:
+                words = [m[2].strip()]
+            conf[m[1]] = " ".join(words)
     return conf
+
+
+def notify_checks(conf: dict[str, str], add) -> None:
+    from dealhound.notify import normalize_mode
+    try:
+        mode = normalize_mode(conf.get("NOTIFY_MODE"))
+    except ValueError as e:
+        add("NOTIFY_MODE", "FAIL", str(e))
+        return
+    top_n = conf.get("NOTIFY_TOP_N", "10")
+    add("NOTIFY_MODE", "ok", f"{mode}" + (f" (top {top_n})" if mode == "top" else ""))
+    if mode == "off":
+        return
+    chats = conf.get("NOTIFY_TELEGRAM_CHAT_IDS", "").split()
+    if not chats:
+        add("NOTIFY_TELEGRAM_CHAT_IDS", "warn", "empty: no notification will be sent "
+            "(wizard, step Telegram)")
+    elif not all(re.fullmatch(r"-?\d+", c) for c in chats):
+        add("NOTIFY_TELEGRAM_CHAT_IDS", "FAIL", "chat ids must be numbers, space-separated")
+    else:
+        add("NOTIFY_TELEGRAM_CHAT_IDS", "ok", f"{len(chats)} chat(s)")
+    token = read_config(SECRETS_PATH).get("TELEGRAM_BOT_TOKEN", "") if SECRETS_PATH.exists() else ""
+    if not token:
+        add("secrets.env", "warn", "no TELEGRAM_BOT_TOKEN (cp secrets.example.env secrets.env)")
+    elif not re.fullmatch(r"\d+:[A-Za-z0-9_-]{30,}", token):
+        add("secrets.env", "FAIL", "TELEGRAM_BOT_TOKEN does not look like a bot token")
+    else:
+        add("secrets.env", "ok", "TELEGRAM_BOT_TOKEN present (value not shown)")
 
 
 def doctor() -> list[dict[str, str]]:
@@ -221,6 +255,7 @@ def doctor() -> list[dict[str, str]]:
             else:
                 add(key, "ok", f"{value} min")
         add("ANALYSIS_MODEL", "ok", conf.get("ANALYSIS_MODEL") or "Claude Code default")
+        notify_checks(conf, add)
     else:
         add("config.env", "FAIL", "absent: run /dealhound wizard")
 

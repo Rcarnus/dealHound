@@ -12,7 +12,7 @@ automatiquement par Claude selon tes critères pour remonter les meilleurs deals
 | Analyse périodique par `claude -p` sur le serveur | fait    |
 | Déploiement sur serveur (systemd)                | fait    |
 | Skill Claude Code `/dealhound`                   | fait    |
-| Notifications téléphone                          | à faire |
+| Notifications Telegram                           | fait    |
 | Autres sources (La Centrale…)                    | à faire |
 
 ## Comment ça marche
@@ -29,7 +29,8 @@ Sur le serveur, deux tâches tournent à intervalle fixe : la **recherche** (tou
 min par défaut, sans IA) et l'**analyse** (toutes les 3 h par défaut). L'analyse note
 chaque nouvelle annonce, critère par critère, avec `claude -p`, à partir d'un prompt de
 notation rédigé à la création de la recherche. Les notes, red flags, questions à poser
-et une synthèse remontent dans `/dealhound results`.
+et une synthèse remontent dans `/dealhound results`, et sur **Telegram** : par défaut
+quand une nouvelle annonce entre dans le top 10 ([docs/telegram.md](docs/telegram.md)).
 
 ## Utilisation : `/dealhound` dans Claude Code
 
@@ -40,7 +41,7 @@ cherche, Claude rédige la mission, la teste, la fait valider puis la déploie.
 | Commande | Effet |
 |---|---|
 | `/dealhound` | Liste des sous-commandes |
-| `/dealhound wizard` | Configuration guidée (environnement local, intervalles, serveur : paquets, Claude Code, authentification, tests ; contexte utilisateur), puis vérification complète |
+| `/dealhound wizard` | Configuration guidée (environnement local, intervalles, serveur : paquets, Claude Code, authentification, tests ; Telegram ; entretien de profil), puis vérification complète. `wizard profil` et `wizard telegram` lancent une seule étape |
 | `/dealhound config` | État des lieux de la configuration, en local et sur les serveurs |
 | `/dealhound new [description]` | Crée une recherche à partir de ta description et de ton profil (`context/`) : critères de recherche, critères de notation et prompt de notation. La teste en réel, te la fait relire, puis la déploie sur le serveur par défaut |
 | `/dealhound list` | Recherches déployées : mission, serveur, description, critères de recherche et de notation, dernière collecte |
@@ -76,10 +77,14 @@ Claude Code sur le serveur sont à lancer par toi.
 | `SEARCH_INTERVAL_MIN` | Minutes entre deux recherches sur les sources (défaut 30, sans inférence) |
 | `ANALYSIS_INTERVAL_MIN` | Minutes entre deux analyses par inférence (défaut 180) |
 | `ANALYSIS_MODEL` | Modèle de l'analyse (vide = défaut de Claude Code ; ex. `sonnet` pour réduire le coût) |
+| `NOTIFY_TELEGRAM_CHAT_IDS` | Chats Telegram à notifier, séparés par des espaces |
+| `NOTIFY_MODE` | `top` (défaut : nouvelle annonce dans le top N), `analysis` (à chaque analyse, pour régler les critères), `new_deal` (chaque annonce notée), `off` |
+| `NOTIFY_TOP_N` | Taille du top surveillé par le mode `top` (défaut 10) |
 | `LOCAL_PYTHON` | Python local avec les dépendances, pour tester une mission avant de la déployer |
 
-Après un changement d'intervalle ou de modèle, `bash deploy/deploy.sh push` met à jour
-les timers du serveur.
+Le token du bot Telegram va dans `secrets.env` (ignoré par git, modèle
+`secrets.example.env`), jamais dans `config.env`. Après tout changement,
+`bash deploy/deploy.sh push` met à jour le serveur (timers, notifications, secrets).
 
 ## Données privées
 
@@ -87,9 +92,11 @@ Le dépôt est public ; restent en local (et sur tes serveurs) seulement :
 
 - `missions/` : les vraies recherches (critères, contexte, état, résultats). Seul
   l'exemple `examples/mission/` est versionné.
-- `context/*.md` : ton profil et tes règles d'achat, lus par l'analyse et par
-  `/dealhound new`. Voir `context/README.md`.
-- `config.env` : tes serveurs.
+- `context/` (sauf son README) : ton profil, tes préférences de recherche et tes règles
+  d'achat, recueillis par l'entretien de profil du wizard (`/dealhound wizard profil`
+  pour le refaire seul), lus par l'analyse et par `/dealhound new`. Voir
+  `context/README.md`.
+- `config.env` : tes serveurs et chats Telegram ; `secrets.env` : le token du bot.
 
 ## Usage avancé : les scripts
 
@@ -111,6 +118,7 @@ bash deploy/deploy.sh list               # missions de tous les serveurs (JSON)
 bash deploy/deploy.sh results <id> [n]   # meilleurs deals (JSON)
 bash deploy/deploy.sh run [analyze]      # recherche (ou analyse) immédiate
 bash deploy/deploy.sh test-claude        # vérifie claude -p sur le serveur (~0,02 $)
+bash deploy/deploy.sh notify-test        # message Telegram de test depuis le serveur
 bash deploy/deploy.sh status | logs [n]
 bash deploy/deploy.sh pull <id>          # rapatrie deals.md dans .remote/<id>/
 bash deploy/deploy.sh retire <id>        # arrête la mission (archivée)

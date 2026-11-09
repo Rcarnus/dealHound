@@ -22,11 +22,14 @@ meilleurs deals à l'utilisateur.
 
 ## Contexte utilisateur : à lire d'abord
 
-`context/` décrit l'utilisateur (identité, domicile, foyer, finances) et ses règles
-générales : `profil.md`, `achats.md`, `communication.md`. **Avant de créer ou modifier
-une recherche, lire ces fichiers** : lieu de départ et coordonnées, budget tout compris,
-pas de négociation, red flags, façon de présenter les résultats. Ce qui est propre à une
-recherche va dans `missions/<nom>/context.md`, pas dans `context/`.
+`context/` décrit l'utilisateur (identité, domicile, foyer, situation, finances) et ses
+règles générales : `profil.md`, `preferences.md`, `achats.md`, `communication.md`,
+remplis par l'entretien de profil de `/dealhound wizard` (ou `/dealhound wizard profil`).
+**Avant de créer ou modifier une recherche, lire ces fichiers** : lieu de départ et
+coordonnées, préférences, budget tout compris, pas de négociation, red flags, façon de
+présenter les résultats. Ce qui est propre à une recherche va dans
+`missions/<nom>/context.md`, pas dans `context/`. **Tout `context/` sauf le README est
+ignoré par git** : ne jamais le commiter ni en recopier le contenu dans un fichier versionné.
 `dealhound/context.py` (`build_context`) assemble les deux pour l'analyse.
 
 ## Principe
@@ -46,8 +49,11 @@ recherche va dans `missions/<nom>/context.md`, pas dans `context/`.
      et rédige une synthèse.
 - **Stockage local** : un état machine en JSON par mission (source de vérité), et un
   `deals.md` régénéré à partir de cet état pour la lecture humaine.
-- **Notification** : les meilleurs deals (au-dessus d'un seuil de score) sont aussi
-  poussés sur téléphone (ntfy ou Telegram).
+- **Notification Telegram** à la fin de chaque analyse, selon `NOTIFY_MODE` : `top`
+  (défaut : une annonce notée pendant l'analyse entre dans le top `NOTIFY_TOP_N`),
+  `analysis` (synthèse + top 5 à chaque analyse, pour régler les critères), `new_deal`
+  (toutes les annonces notées), `off`. Override par mission : `notify: {mode: …}`.
+  Code : `dealhound/notify.py` ; mode d'emploi : `docs/telegram.md`.
 
 ## Contraintes d'environnement
 
@@ -88,7 +94,7 @@ dealHound/
 │   ├── models.py           # Listing, Mission, Criterion (chargement de mission.yaml)
 │   ├── store.py            # state.json : chargement, fusion, écriture atomique
 │   ├── report.py           # rendu de deals.md à partir de l'état
-│   ├── notify.py           # (à faire) notifications push
+│   ├── notify.py           # notifications Telegram (modes top/analysis/new_deal/off) + CLI discover/test
 │   └── sources/
 │       ├── __init__.py     # REGISTRY : nom dans mission.yaml -> source
 │       ├── base.py         # interface : search(filters) -> SearchResult(listings, complete)
@@ -217,8 +223,8 @@ scoring:                  # critères de NOTATION (prompt complet : scoring.md)
   criteria:
     - {id: prix, label: Prix, weight: 3, description: "10 = … ; 5 = … ; 0 = …"}
     - {id: distance, label: Distance, weight: 1, description: "…"}
-notify:
-  min_score: 8
+notify:                   # facultatif : impose un mode de notification à cette mission
+  mode: analysis
 ```
 
 Les clés de filtre acceptées par chaque source sont documentées dans la docstring de
@@ -303,7 +309,9 @@ l'utilisateur doit être exposée via ce skill.
 Configuration : `config.env` à la racine (ignoré par git ; modèle `config.example.env`) :
 `DEPLOY_HOST` (serveur par défaut), `EXTRA_HOSTS`, `DEPLOY_DIR`, `SEARCH_INTERVAL_MIN`
 (défaut 30), `ANALYSIS_INTERVAL_MIN` (défaut 180), `ANALYSIS_MODEL` (vide = défaut de
-Claude Code), `LOCAL_PYTHON`. Lu par `deploy.sh` (sourcé) et `cli.py doctor`. Le serveur
+Claude Code), `NOTIFY_TELEGRAM_CHAT_IDS`, `NOTIFY_MODE`, `NOTIFY_TOP_N`, `LOCAL_PYTHON`.
+Lu par `deploy.sh` (sourcé), `deploy/py.sh` (exporté, avec `secrets.env`) et
+`cli.py doctor`. Le serveur
 n'a pas de `config.env` : `push` traduit la config en unités systemd.
 `push` écrit la version du code (`git describe`) dans `~/<DEPLOY_DIR>/.deployed` ;
 `check` l'affiche à côté de la version locale.
@@ -329,7 +337,7 @@ n'a pas de `config.env` : `push` traduit la config en unités systemd.
   `deals.md` distants.
 - **Linger** : sans lui, les timers ne tournent que tant que l'utilisateur distant a une
   session ouverte. `deploy.sh check` le signale ; à corriger par l'utilisateur :
-  `sudo loginctl enable-linger <user>`. (Désactivé sur le Pi au 2026-11-08.)
+  `sudo loginctl enable-linger <user>`. (Activé sur le Pi le 2026-11-09.)
 - Clé SSH : c'est la clé de **WSL** qui doit être autorisée (le script tourne dans WSL),
   pas celle de Windows.
 
@@ -353,8 +361,11 @@ dans `bash -c '...'` via PowerShell casse les guillemets.
 
 - Langue : code et identifiants en anglais, docs et sorties utilisateur en français.
 - Python 3.11+, typage simple, pas de framework.
-- Pas de secrets dans le repo (tokens ntfy/Telegram, etc.) : variables d'environnement
-  ou fichier `.env` ignoré par git.
+- Secrets (token du bot Telegram…) : uniquement dans `secrets.env` (ignoré par git,
+  modèle `secrets.example.env`). `push` le copie dans `~/.config/dealhound/secrets.env`
+  (mode 600) sur le serveur, chargé par l'unité d'analyse (`EnvironmentFile`). Ne jamais
+  afficher, logger ni recopier un token ; les erreurs de l'API Telegram ne contiennent
+  pas l'URL (qui porte le token).
 - `missions/` (critères et données des vraies recherches) est entièrement ignoré par git.
 
 ## Décisions prises
@@ -362,7 +373,9 @@ dans `bash -c '...'` via PowerShell casse les guillemets.
 - Un seul code, N missions dans `missions/<nom>/`.
 - État en JSON par mission (source de vérité) + `deals.md` généré pour la lecture.
 - Accès aux sources en HTTP léger d'abord ; navigateur headless en dernier recours.
-- Notification push des meilleurs deals en plus de `deals.md`.
+- Notifications par Telegram (API Bot, stdlib, envoyées par l'analyse sur le serveur),
+  mode par défaut `top` (top 10) ; `analysis` pour régler les critères. Un échec d'envoi
+  ne fait jamais échouer l'analyse.
 - leboncoin via la lib `lbc` (le HTTP simple est bloqué par DataDome).
 - Planification par systemd timers utilisateur ; déploiement par SSH + rsync.
 - Contexte utilisateur général dans `context/`, contexte de recherche dans la mission.
@@ -374,6 +387,5 @@ dans `bash -c '...'` via PowerShell casse les guillemets.
 
 ## Décisions ouvertes
 
-- **[À TRANCHER] Canal de notification** : ntfy (simple, sans compte) ou Telegram (bot).
 - **[À TRANCHER] Déclenchement de l'analyse par événement** (ex. juste après une collecte
   qui trouve du nouveau) plutôt qu'à intervalle fixe.

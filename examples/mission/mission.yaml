@@ -70,5 +70,7 @@ scoring:
       weight: 1
       description: "10 = annonce complète, photos réelles, remise en main propre ; 0 = signaux d'arnaque"
 
+# Notifications Telegram : mode global NOTIFY_MODE dans config.env. Décommenter pour
+# l'imposer à cette mission (top | analysis | new_deal | off).
 notify:
-  min_score: 8
+  # mode: analysis

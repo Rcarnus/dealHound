@@ -45,7 +45,11 @@ ignoré par git). S'il est absent, ou si `DEPLOY_HOST` vaut encore l'exemple
 
 Variables : `DEPLOY_HOST` (serveur par défaut), `EXTRA_HOSTS`, `DEPLOY_DIR`,
 `SEARCH_INTERVAL_MIN` (recherche, défaut 30), `ANALYSIS_INTERVAL_MIN` (analyse par
-inférence, défaut 180), `ANALYSIS_MODEL` (vide = défaut de Claude Code), `LOCAL_PYTHON`.
+inférence, défaut 180), `ANALYSIS_MODEL` (vide = défaut de Claude Code),
+`NOTIFY_TELEGRAM_CHAT_IDS` (chats à notifier), `NOTIFY_MODE` (`top` défaut,
+`analysis`, `new_deal`, `off`), `NOTIFY_TOP_N` (défaut 10), `LOCAL_PYTHON`. Le token du
+bot Telegram est dans `secrets.env` (ignoré par git, modèle `secrets.example.env`) :
+ne jamais l'afficher, le recopier ni le demander dans le chat.
 
 ## Lancer les scripts
 
@@ -61,12 +65,13 @@ script ad hoc, l'écrire dans le scratchpad et le lancer avec `bash deploy/py.sh
 
 Commandes disponibles :
 - `deploy.sh [--host H] check | push [mission...] | list | results <id> [n] | status |
-  run [collect|analyze] | test-claude | logs [n] | pull <id> | retire <id>`
+  run [collect|analyze] | test-claude | notify-test | logs [n] | pull <id> | retire <id>`
   (`--host` par défaut : `DEPLOY_HOST` ; `list` interroge `DEPLOY_HOST` et `EXTRA_HOSTS`).
 - `py.sh -m dealhound.cli list|results <id>|doctor [--json]` (missions locales),
   `py.sh collect.py --mission <id> --dry-run -v` (test réel des critères de recherche,
   n'écrit rien), `py.sh analyze.py --mission <id> --dry-run` (affiche le prompt
-  d'analyse complet, sans inférence).
+  d'analyse complet, sans inférence), `py.sh -m dealhound.notify discover|test`
+  (chats Telegram vus par le bot / message de test).
 
 Une mission (`<id>`) = un dossier `missions/<id>/`. **`missions/`, `config.env` et
 `context/*.md` sont privés** (dépôt public) : ne jamais les commiter, ne jamais nommer une
@@ -191,8 +196,10 @@ Lecture seule, sauf accord de l'utilisateur pour une correction.
 3. Chaque serveur (`DEPLOY_HOST` et `EXTRA_HOSTS`) : `deploy.sh --host <h> check`
    (prérequis, linger, Claude Code installé et authentifié, version installée).
 4. Comparer `local code version` et la version installée : si elles diffèrent, ou si le
-   code n'est pas installé, proposer `deploy.sh --host <h> push` (met à jour le code et
-   les intervalles des timers sans toucher les missions ni leur état).
+   code n'est pas installé, proposer `deploy.sh --host <h> push` (met à jour le code,
+   les intervalles des timers, la config de notification et `secrets.env`, sans toucher
+   les missions ni leur état). La ligne `notify:` du push dit si le serveur a ses
+   secrets ; proposer `deploy.sh notify-test` si les notifications sont configurées.
 5. Tableau récapitulatif : Élément | État (ok / à corriger / attention) | Action.
 6. Corrections : appliquer seulement ce qui ne touche ni le système ni la sécurité
    (venv local, push du code). Pour le reste, renvoyer vers l'étape concernée de
@@ -203,6 +210,11 @@ Lecture seule, sauf accord de l'utilisateur pour une correction.
 Configuration interactive, une étape à la fois, avec AskUserQuestion et des valeurs par
 défaut tirées de la config existante (ou de `config.example.env`). Suivre
 `docs/server-setup.md` pour tout ce qui concerne le serveur.
+
+`/dealhound wizard profil` ne lance que l'étape 5 (entretien de profil) : pour compléter
+ou mettre à jour le contexte utilisateur sans refaire la configuration.
+`/dealhound wizard telegram` ne lance que l'étape 4 bis (notifications), puis
+`deploy.sh push` et `deploy.sh notify-test`.
 
 1. **Environnement local** :
    - Sur Windows, vérifier WSL (`wsl -l -v`).
@@ -232,14 +244,82 @@ défaut tirées de la config existante (ou de `config.example.env`). Suivre
      puis `/login`) ou B (clé API dans `~/.config/environment.d/`). C'est l'utilisateur
      qui s'authentifie ; ne jamais manipuler de clé ou de mot de passe à sa place.
    - `deploy.sh test-claude` : doit afficher `ok`.
-5. **Contexte utilisateur** : si `context/profil.md`, `achats.md` ou `communication.md`
-   manquent, poser quelques questions (prénom, ville, ce qu'il aime chercher, budget et
-   habitudes d'achat) et les rédiger selon `context/README.md`. Pour la ville, noter des
-   coordonnées approximatives marquées `[à vérifier]`.
-6. **Installer et vérifier** : `deploy.sh push` (code + timers), `deploy.sh status`
-   (deux timers aux bons intervalles), puis dérouler `config`.
+4 bis. **Notifications Telegram** (`docs/telegram.md`), étape par étape :
+   - L'utilisateur crée un bot avec **@BotFather** (`/newbot`) et récupère son token.
+   - `cp secrets.example.env secrets.env && chmod 600 secrets.env`, puis **l'utilisateur**
+     colle le token dans `secrets.env` lui-même (ne jamais lui demander de le coller dans
+     le chat, ne jamais l'afficher ni le recopier).
+   - Chaque personne à notifier envoie `/start` au bot (ou l'ajoute à un groupe et y
+     écrit un message).
+   - `py.sh -m dealhound.notify discover` : affiche les chats vus par le bot (id, type,
+     nom). Demander lesquels notifier (AskUserQuestion, multiSelect) et les écrire dans
+     `NOTIFY_TELEGRAM_CHAT_IDS`, séparés par des espaces.
+   - Mode : « top : nouveau deal dans le top 10 (Recommended) » / « analysis : à chaque
+     analyse, pour régler les critères » / « new_deal : chaque nouvelle annonce notée » /
+     « off ». Taille du top (`NOTIFY_TOP_N`, défaut 10).
+   - `py.sh -m dealhound.notify test` (envoi depuis le PC), puis après le push de
+     l'étape 6, `deploy.sh notify-test` (envoi depuis le serveur).
+5. **Entretien de profil** : voir la section suivante. Toujours le dérouler au premier
+   setup ; si `context/` est déjà rempli, proposer une mise à jour rapide (« Mettre à
+   jour le profil » / « Le profil est à jour (Recommended) »).
+6. **Installer et vérifier** : `deploy.sh push` (code, contexte, timers),
+   `deploy.sh status` (deux timers aux bons intervalles), puis dérouler `config`.
 7. Conclure : ce qui est prêt, ce qui reste à faire par l'utilisateur, et la suite
    (`/dealhound new`).
+
+### Entretien de profil (wizard, étape 5)
+
+But : que l'analyse automatique et `/dealhound new` sachent pour qui ils travaillent,
+sans reposer les mêmes questions à chaque recherche. Tout ce qui est recueilli va dans
+`context/` (**ignoré par git** : seul `context/README.md` est versionné) et n'est copié
+que sur les serveurs de l'utilisateur par `deploy.sh push`.
+
+**Comment mener l'entretien**
+
+- Commencer par lire `context/README.md` et les fichiers déjà présents : ne demander que
+  ce qui manque ou a pu changer. Annoncer en une phrase à quoi servent les réponses et
+  qu'elles restent privées (jamais commitées).
+- Procéder par **tours de 2 à 4 questions** (AskUserQuestion, options concrètes + champ
+  libre), thème par thème, dans l'ordre de la grille. Après chaque tour, reformuler en
+  une ligne ce qui a été compris, puis passer au thème suivant ou creuser.
+- **Continuer tant qu'un thème obligatoire n'a pas le niveau « suffisant »** de la
+  grille. S'arrêter dès que tout est suffisant : ne pas transformer l'entretien en
+  interrogatoire. Si l'utilisateur ne veut pas répondre à une question, l'accepter,
+  noter `[non renseigné]`, et continuer.
+- Chiffres sensibles (revenus, épargne) : demander des **ordres de grandeur ou des
+  fourchettes**, jamais de montants exacts. Ne jamais demander de numéro de compte, de
+  pièce d'identité, d'adresse postale exacte, de mot de passe ni de donnée de santé.
+- Lieu : la ville ou la commune suffit. En déduire des coordonnées approximatives du
+  centre de la commune, marquées `[à vérifier]`.
+
+**Grille : thème → ce qu'il faut obtenir → seuil « suffisant »**
+
+| Thème | À obtenir | Suffisant quand on connaît… |
+|---|---|---|
+| Identité et lieu (obligatoire) | Prénom, âge ou tranche, commune, logement (stockage, garage, accès), mobilité (voiture, transports, rayon de déplacement accepté) | la commune, le rayon de déplacement accepté et les contraintes de logement qui pèsent sur les achats |
+| Foyer (obligatoire) | Composition (couple, enfants et âges, animaux), qui utilise ce qui est acheté | qui vit au foyer et pour qui on achète |
+| Situation socio-professionnelle (obligatoire) | Métier ou secteur, statut (salarié, indépendant, micro-entreprise : TVA récupérable ou non), compétences utiles (bricolage, mécanique, technique) | si la TVA est récupérable et ce que l'utilisateur sait vérifier ou réparer lui-même |
+| Finances (obligatoire) | Mode de paiement habituel (comptant, crédit), aisance générale, coût d'opportunité de l'argent (placement de référence en %/an), sensibilité au prix | comment il paie et ce que lui « coûte » l'argent immobilisé |
+| Préférences de recherche (obligatoire) | Types d'objets recherchés en général ; arbitrage prix / qualité ; neuf ou occasion ; état minimal accepté ; marques aimées ou évitées ; pro ou particulier ; envoi ou main propre ; urgence habituelle (« dès que possible » ou « j'attends la perle ») ; ce qui fait un très bon deal pour lui | comment il arbitre entre prix, qualité et proximité, et ce qu'il refuse d'office |
+| Règles d'achat (obligatoire) | Négociation ou non, budget tout compris ou non, paiements acceptés, red flags personnels, expériences d'arnaque passées | ses règles de paiement et ses signaux d'alerte |
+| Présentation (facultatif) | Longueur et format des réponses, ton, ce qui l'agace | sinon, garder les valeurs par défaut de `communication.md` |
+
+**Ce qu'il faut écrire** (en français, faits courts, `[à vérifier]` pour ce qui est
+déduit ; voir `context/README.md`)
+
+| Fichier | Contenu |
+|---|---|
+| `context/profil.md` | Identité et lieu (avec coordonnées pour les recherches géographiques), foyer, situation socio-professionnelle, finances |
+| `context/preferences.md` | Préférences de recherche : ce qu'il cherche en général, arbitrages, état, marques, vendeurs, urgence, définition d'un bon deal |
+| `context/achats.md` | Règles d'achat : prix, paiement, vendeurs, signaux d'alerte |
+| `context/communication.md` | Façon de présenter les résultats |
+
+Avant d'écrire : montrer un résumé par fichier et demander validation (« Enregistrer
+(Recommended) » / « Corriger »). Fichier existant : le mettre à jour (garder ce qui est
+toujours vrai, remplacer ce qui a changé), sans tout réécrire. Après l'écriture, vérifier
+avec `git check-ignore -v context/<fichier>` que chaque fichier est bien ignoré, et le
+signaler à l'utilisateur. Si des missions sont déjà déployées, proposer `deploy.sh push`
+pour envoyer le contexte à jour au serveur.
 
 ## Règles
 
